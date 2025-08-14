@@ -1,0 +1,17 @@
+{
+	"name": "tts-ws",
+	"version": "0.0.0",
+	"private": true,
+	"scripts": {
+		"deploy": "wrangler deploy",
+		"dev": "wrangler dev",
+		"start": "wrangler dev",
+		"cf-typegen": "wrangler types",
+		"proto": "protoc --ts_out src --proto_path src src/packet.proto"
+	},
+	"devDependencies": {
+		"@protobuf-ts/plugin": "^2.11.1",
+		"typescript": "^5.5.2",
+		"wrangler": "^4.28.0"
+	}
+}
