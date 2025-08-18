@@ -92,7 +92,7 @@
 
         channel1Subscribed.addEventListener('message', (evt) => {
             const received = evt.data
-            const receivedTs = performance.now()
+            const receivedTs = evt.timeStamp
             const sendTs = parseFloat(received)
             dcSamples.push(receivedTs - sendTs)
             updateStats(dcSamples, dcStats)
@@ -126,7 +126,7 @@
             });
             let sum = arr.reduce((acc, curr) => acc + curr, 0);
             let variance = sum / arr.length
-            return Math.sqrt(sum / arr.length)
+            return Math.sqrt(variance)
         }
 
         function updateStats(samples, elem) {
