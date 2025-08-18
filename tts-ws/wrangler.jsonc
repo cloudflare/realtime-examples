@@ -1,0 +1,34 @@
+/**
+ * For more details on how to configure Wrangler, refer to:
+ * https://developers.cloudflare.com/workers/wrangler/configuration/
+ */
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "tts-ws",
+	"main": "src/index.ts",
+	"compatibility_date": "2025-08-06",
+	"migrations": [
+		{
+			"new_sqlite_classes": [
+				"AudioSession"
+			],
+			"tag": "v1"
+		}
+	],
+	"durable_objects": {
+		"bindings": [
+			{
+				"class_name": "AudioSession",
+				"name": "AUDIO_SESSION"
+			}
+		]
+	},
+	"observability": {
+		"enabled": true
+	},
+	"vars": {
+		"SFU_API_BASE": "https://rtc.live.cloudflare.com/v1",
+		"ELEVENLABS_VOICE_ID": "21m00Tcm4TlvDq8ikWAM",
+		"REALTIME_SFU_APP_ID": "c57b0ed7694514a0088a41fb53218173",
+	}
+}

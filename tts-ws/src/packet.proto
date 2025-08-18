@@ -1,0 +1,8 @@
+syntax = "proto3";
+
+message Packet {
+    uint32 sequenceNumber = 1; // not used in Buffer mode
+    uint32 timestamp = 2; // not used in Buffer mode
+
+    bytes payload = 5;
+}
