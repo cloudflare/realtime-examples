@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TTS Demo - Cloudflare AI</title>
+    <link rel="stylesheet" href="/assets/player.css">
+</head>
+
+<body>
+    <div class="container">
+        <div class="header">
+            <h1 id="pageTitle">TTS Demo</h1>
+            <div class="session-info">
+                <span id="sessionNameDisplay"></span>
+                <div id="statusIndicator"></div>
+            </div>
+        </div>
+        <!-- Publisher Tabs -->
+        <div id="publisherTabs" class="tabs hidden">
+            <button id="tabTTS" class="tab active" type="button">TTS</button>
+            <button id="tabSTT" class="tab" type="button">STT</button>
+        </div>
+
+        <!-- Publisher: Step 1 - Start Session -->
+        <div class="section hidden" id="publisherSection">
+            <h2>Step 1: Setup & Publish Session</h2>
+            <p>Select a voice and publish the session to make it available for listeners.</p>
+            <div style="display: flex; gap: 1rem; margin-bottom: 1rem;">
+                <div style="flex: 1;">
+                    <label for="speakerSelect">Voice</label>
+                    <select id="speakerSelect">
+                        <option value="zeus" selected>Zeus (Default)</option>
+                        <option value="angus">Angus</option>
+                        <option value="asteria">Asteria</option>
+                        <option value="arcas">Arcas</option>
+                        <option value="orion">Orion</option>
+                        <option value="orpheus">Orpheus</option>
+                        <option value="athena">Athena</option>
+                        <option value="luna">Luna</option>
+                        <option value="perseus">Perseus</option>
+                        <option value="helios">Helios</option>
+                        <option value="hera">Hera</option>
+                        <option value="stella">Stella</option>
+                    </select>
+                </div>
+            </div>
+            <p><strong>Note:</strong> Publishing may take a moment as it sets up the streaming infrastructure.</p>
+            <div class="button-group">
+                <button id="publishBtn" class="btn-primary">
+                    <span class="button-text">Publish Session</span>
+                    <div class="spinner"></div>
+                </button>
+                <button id="unpublishBtn" class="btn-warning-outline hidden">
+                    <span class="button-text">Unpublish</span>
+                    <div class="spinner"></div>
+                </button>
+            </div>
+        </div>
+
+        <!-- Connect to Listen -->
+        <div class="section" id="listenerSection">
+            <h2 id="listenerTitle">Audio Stream</h2>
+            <p>Connect to the audio stream to hear the generated speech.</p>
+            <div class="button-group">
+                <button id="connectBtn" class="btn-primary">
+                    <span class="button-text">Connect</span>
+                    <div class="spinner"></div>
+                </button>
+                <button id="disconnectBtn" class="btn-danger-outline hidden">Disconnect</button>
+            </div>
+        </div>
+
+        <!-- Publisher: Step 3 - Generate Speech -->
+        <div class="section hidden disabled" id="generateSection">
+            <h2>Step 3: Generate Speech</h2>
+            <p>Enter text to convert to speech using the selected voice.</p>
+            <label for="ttsText">Text</label>
+            <textarea id="ttsText" rows="3"
+                placeholder="Enter text to synthesize...">Hello world! This is a test of Realtime text to speech.</textarea>
+            <button id="generateBtn" class="btn-success" style="margin-top: 1rem;">
+                <span class="button-text">Generate Speech</span>
+                <div class="spinner"></div>
+            </button>
+        </div>
+
+        <!-- STT Section -->
+        <div class="section hidden" id="sttSection">
+            <h2>Speech-to-Text (STT)</h2>
+            <div class="stt-controls">
+                <button id="startSTTBtn" class="btn-danger">
+                    <span class="button-text">Start Mic</span>
+                    <div class="spinner"></div>
+                </button>
+                <button id="stopSTTBtn" class="btn-secondary hidden">
+                    <span class="button-text">Stop Mic</span>
+                </button>
+                <button id="startForwardingBtn" class="btn-success" disabled>
+                    <span class="button-text">Start Forwarding</span>
+                    <div class="spinner"></div>
+                </button>
+                <button id="stopForwardingBtn" class="btn-warning-outline hidden">
+                    <span class="button-text">Stop Forwarding</span>
+                </button>
+            </div>
+
+            <div id="transcriptionDisplay" class="transcription-box">
+                <div class="transcription-header">
+                    <h3>Live Transcription</h3>
+                    <div class="transcription-actions">
+                        <button id="clearTranscriptionBtn">Clear</button>
+                        <button id="exportSubtitlesBtn">Export Subtitles</button>
+                        <button id="restartNovaBtn" title="Debug: close and reconnect Nova STT">Restart Nova
+                            STT</button>
+                    </div>
+                </div>
+                <div id="transcriptionContent"></div>
+            </div>
+        </div>
+
+        <!-- Media & Debug -->
+        <div class="section">
+            <h2>Output</h2>
+            <div id="media-container" style="margin-bottom: 1rem;"></div>
+            <details open>
+                <summary style="cursor: pointer; font-weight: 500; margin-bottom: 0.5rem;">Debug Logs</summary>
+                <textarea id="debugArea" readonly style="margin-top: 0.5rem;"></textarea>
+            </details>
+        </div>
+    </div>
+
+    <footer class="footer">
+        <span aria-hidden="true">♥</span> made with cloudflare ·
+        <a id="repoLink" href="https://github.com/cloudflare/realtime-examples/tree/main/ws-tts-stt" target="_blank"
+            rel="noopener noreferrer">GitHub</a>
+    </footer>
+    <script type="module" src="/assets/player.js"></script>
+</body>
+
+</html>
