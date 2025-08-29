@@ -4,7 +4,7 @@
  */
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "tts-ws",
+	"name": "cf-realtime-audio",
 	"main": "src/index.ts",
 	"compatibility_date": "2025-08-06",
 	"migrations": [
