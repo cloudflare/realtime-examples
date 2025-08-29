@@ -1,0 +1,47 @@
+/**
+ * For more details on how to configure Wrangler, refer to:
+ * https://developers.cloudflare.com/workers/wrangler/configuration/
+ */
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "tts-ws",
+	"main": "src/index.ts",
+	"compatibility_date": "2025-08-06",
+	"migrations": [
+		{
+			"new_sqlite_classes": [
+				"TTSAdapter"
+			],
+			"tag": "v1"
+		},
+		{
+			"new_sqlite_classes": [
+				"STTAdapter"
+			],
+			"tag": "v2"
+		},
+	],
+	"assets": {
+        "directory": "public"
+    },
+	"durable_objects": {
+		"bindings": [
+			{
+				"class_name": "TTSAdapter",
+				"name": "TTS_ADAPTER"
+			},
+			{
+				"class_name": "STTAdapter",
+				"name": "STT_ADAPTER"
+			}
+		]
+	},
+	"observability": {
+		"enabled": true
+	},
+	"vars": {
+		"SFU_API_BASE": "https://rtc.live.cloudflare.com/v1",
+		"CF_ACCOUNT": "8477399eb04accc1792af96aeaa25222",
+		"REALTIME_SFU_APP_ID": "66e52edd9e080a5c01c0b4d559fd0e3c",
+	}
+}
