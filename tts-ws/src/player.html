@@ -3,673 +3,139 @@
 
 <head>
     <meta charset="UTF-8">
-    <title>Cloudflare Realtime TTS Demo</title>
-    <style>
-        :root {
-            --blue: #007bff;
-            --indigo: #6610f2;
-            --purple: #6f42c1;
-            --pink: #e83e8c;
-            --red: #dc3545;
-            --orange: #fd7e14;
-            --yellow: #ffc107;
-            --green: #28a745;
-            --teal: #20c997;
-            --cyan: #17a2b8;
-            --white: #fff;
-            --gray: #6c757d;
-            --gray-dark: #343a40;
-            --primary: #0062ff;
-            --secondary: #6c757d;
-            --success: #28a745;
-            --info: #17a2b8;
-            --warning: #ffc107;
-            --danger: #dc3545;
-            --light: #f8f9fa;
-            --dark: #343a40;
-            --font-family-sans-serif: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
-        }
-
-        *,
-        *::before,
-        *::after {
-            box-sizing: border-box;
-        }
-
-        body {
-            font-family: var(--font-family-sans-serif);
-            margin: 0;
-            padding: 2rem;
-            background-color: #eef2f9;
-            color: var(--dark);
-            display: flex;
-            justify-content: center;
-            align-items: flex-start;
-            min-height: 100vh;
-        }
-
-        .container {
-            background-color: var(--white);
-            padding: 2.5rem;
-            border-radius: 16px;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.07);
-            width: 100%;
-            max-width: 680px;
-            border: 1px solid #dee2e6;
-        }
-
-        h1,
-        h2 {
-            color: var(--dark);
-            margin-top: 0;
-        }
-
-        h1 {
-            text-align: center;
-            font-size: 1.75rem;
-            margin-bottom: 0.5rem;
-        }
-
-        h2 {
-            font-size: 1.4rem;
-            padding-bottom: 0.75rem;
-            border-bottom: 1px solid #e9ecef;
-            margin-bottom: 1.5rem;
-        }
-
-        .header {
-            text-align: center;
-            margin-bottom: 2rem;
-        }
-
-        .session-info {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            gap: 1rem;
-            margin-bottom: 2rem;
-        }
-
-        #sessionIdDisplay {
-            background-color: #e9ecef;
-            padding: 0.25rem 0.75rem;
-            border-radius: 6px;
-            font-family: monospace;
-            font-size: 0.9rem;
-            color: var(--gray-dark);
-        }
-
-        #statusIndicator {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.5rem;
-            padding: 0.3rem 0.8rem;
-            border-radius: 20px;
-            font-weight: 500;
-            font-size: 0.85rem;
-            transition: all 0.3s ease;
-        }
-
-        #statusIndicator::before {
-            content: '';
-            display: block;
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background-color: currentColor;
-        }
-
-        #statusIndicator.disconnected {
-            color: var(--gray);
-            background-color: #f1f3f5;
-        }
-
-        #statusIndicator.connecting {
-            color: var(--orange);
-            background-color: #fff5e6;
-        }
-
-        #statusIndicator.live {
-            color: var(--green);
-            background-color: #eaf6eb;
-        }
-
-        .section {
-            margin-bottom: 2.5rem;
-        }
-
-        .section:last-child {
-            margin-bottom: 0;
-        }
-
-        label {
-            display: block;
-            margin-bottom: 0.5rem;
-            font-weight: 500;
-        }
-
-        textarea {
-            width: 100%;
-            padding: 0.75rem 1rem;
-            border: 1px solid #ced4da;
-            border-radius: 8px;
-            box-sizing: border-box;
-            resize: vertical;
-            font-size: 1rem;
-            transition: border-color 0.2s ease, box-shadow 0.2s ease;
-        }
-
-        textarea:focus {
-            outline: none;
-            border-color: var(--primary);
-            box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.2);
-        }
-
-        button {
-            position: relative;
-            padding: 0.75rem 1.5rem;
-            border: none;
-            border-radius: 8px;
-            cursor: pointer;
-            font-size: 1rem;
-            font-weight: 500;
-            transition: all 0.2s ease;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            gap: 0.5rem;
-        }
-
-        button:active {
-            transform: scale(0.98);
-        }
-
-        button:disabled {
-            cursor: not-allowed;
-            opacity: 0.65;
-        }
-
-        .button-group {
-            display: flex;
-            gap: 1rem;
-        }
-
-        #publishBtn {
-            background-color: var(--primary);
-            color: white;
-        }
-
-        #publishBtn:hover:not(:disabled) {
-            background-color: #0056d3;
-        }
-
-        #unpublishBtn {
-            background-color: transparent;
-            color: var(--warning);
-            border: 1px solid var(--warning);
-        }
-
-        #unpublishBtn:hover:not(:disabled) {
-            background-color: var(--warning);
-            color: white;
-        }
-
-        #connectBtn {
-            background-color: var(--primary);
-            color: white;
-        }
-
-        #connectBtn:hover:not(:disabled) {
-            background-color: #0056d3;
-        }
-
-        #generateBtn {
-            background-color: var(--success);
-            color: white;
-        }
-
-        #generateBtn:hover:not(:disabled) {
-            background-color: #218838;
-        }
-
-        #disconnectBtn {
-            background-color: transparent;
-            color: var(--danger);
-            border: 1px solid var(--danger);
-        }
-
-        #disconnectBtn:hover:not(:disabled) {
-            background-color: var(--danger);
-            color: white;
-        }
-
-        #debugArea {
-            width: 100%;
-            height: 200px;
-            padding: 1rem;
-            border: 1px solid #e9ecef;
-            border-radius: 8px;
-            background-color: #f8f9fa;
-            font-family: "SF Mono", "Fira Code", "Fira Mono", "Roboto Mono", monospace;
-            font-size: 0.85em;
-            overflow-y: auto;
-            white-space: pre-wrap;
-            box-sizing: border-box;
-            line-height: 1.6;
-        }
-
-        #media-container audio {
-            width: 100%;
-            border-radius: 8px;
-        }
-
-        .spinner {
-            display: none;
-            width: 1em;
-            height: 1em;
-            border: 2px solid currentColor;
-            border-right-color: transparent;
-            border-radius: 50%;
-            animation: spinner-border .75s linear infinite;
-        }
-
-        @keyframes spinner-border {
-            to {
-                transform: rotate(360deg);
-            }
-        }
-
-        button.loading .spinner {
-            display: inline-block;
-        }
-
-        button.loading .button-text {
-            opacity: 0;
-        }
-
-        .spinner {
-            position: absolute;
-        }
-    </style>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TTS Demo - Cloudflare AI</title>
+    <link rel="stylesheet" href="/assets/player.css">
 </head>
 
 <body>
     <div class="container">
         <div class="header">
-            <h1 id="pageTitle"></h1>
+            <h1 id="pageTitle">TTS Demo</h1>
             <div class="session-info">
-                <span id="sessionIdDisplay"></span>
+                <span id="sessionNameDisplay"></span>
                 <div id="statusIndicator"></div>
             </div>
         </div>
+        <!-- Publisher Tabs -->
+        <div id="publisherTabs" class="tabs hidden">
+            <button id="tabTTS" class="tab active" type="button">TTS</button>
+            <button id="tabSTT" class="tab" type="button">STT</button>
+        </div>
 
         <!-- Publisher: Step 1 - Start Session -->
-        <div class="section" id="publisherSection" style="display: none;">
-            <h2>Step 1: Start Session</h2>
-            <p>Publish the session to make it available for listeners. This only needs to be done once.</p>
+        <div class="section hidden" id="publisherSection">
+            <h2>Step 1: Setup & Publish Session</h2>
+            <p>Select a voice and publish the session to make it available for listeners.</p>
+            <div style="display: flex; gap: 1rem; margin-bottom: 1rem;">
+                <div style="flex: 1;">
+                    <label for="speakerSelect">Voice</label>
+                    <select id="speakerSelect">
+                        <option value="zeus" selected>Zeus (Default)</option>
+                        <option value="angus">Angus</option>
+                        <option value="asteria">Asteria</option>
+                        <option value="arcas">Arcas</option>
+                        <option value="orion">Orion</option>
+                        <option value="orpheus">Orpheus</option>
+                        <option value="athena">Athena</option>
+                        <option value="luna">Luna</option>
+                        <option value="perseus">Perseus</option>
+                        <option value="helios">Helios</option>
+                        <option value="hera">Hera</option>
+                        <option value="stella">Stella</option>
+                    </select>
+                </div>
+            </div>
+            <p><strong>Note:</strong> Publishing may take a moment as it sets up the streaming infrastructure.</p>
             <div class="button-group">
-                <button id="publishBtn">
+                <button id="publishBtn" class="btn-primary">
                     <span class="button-text">Publish Session</span>
                     <div class="spinner"></div>
                 </button>
-                <button id="unpublishBtn" style="display: none;">
-                    <span class="button-text">Unpublish Session</span>
+                <button id="unpublishBtn" class="btn-warning-outline hidden">
+                    <span class="button-text">Unpublish</span>
                     <div class="spinner"></div>
                 </button>
             </div>
         </div>
 
-        <!-- Publisher: Step 2 - Generate Speech -->
-        <div class="section" id="generateSection" style="display: none; opacity: 0.5; pointer-events: none;">
-            <h2>Step 2: Generate Speech</h2>
-            <label for="ttsText">Text to Synthesize</label>
-            <textarea id="ttsText" rows="4"
-                placeholder="Enter text here...">Hello world! This is a test of Realtime text to speech.</textarea>
-            <button id="generateBtn" style="margin-top: 1rem;">
+        <!-- Connect to Listen -->
+        <div class="section" id="listenerSection">
+            <h2 id="listenerTitle">Audio Stream</h2>
+            <p>Connect to the audio stream to hear the generated speech.</p>
+            <div class="button-group">
+                <button id="connectBtn" class="btn-primary">
+                    <span class="button-text">Connect</span>
+                    <div class="spinner"></div>
+                </button>
+                <button id="disconnectBtn" class="btn-danger-outline hidden">Disconnect</button>
+            </div>
+        </div>
+
+        <!-- Publisher: Step 3 - Generate Speech -->
+        <div class="section hidden disabled" id="generateSection">
+            <h2>Step 3: Generate Speech</h2>
+            <p>Enter text to convert to speech using the selected voice.</p>
+            <label for="ttsText">Text</label>
+            <textarea id="ttsText" rows="3"
+                placeholder="Enter text to synthesize...">Hello world! This is a test of Realtime text to speech.</textarea>
+            <button id="generateBtn" class="btn-success" style="margin-top: 1rem;">
                 <span class="button-text">Generate Speech</span>
                 <div class="spinner"></div>
             </button>
         </div>
 
-        <!-- Step 3: Connect to Listen (Shared by Publisher and Listener) -->
-        <div class="section" id="listenerSection">
-            <h2 id="listenerTitle">Connect to Session</h2>
-            <p>Connect to the audio stream to hear the generated speech.</p>
-            <div class="button-group">
-                <button id="connectBtn">
-                    <span class="button-text">Connect and Listen</span>
+        <!-- STT Section -->
+        <div class="section hidden" id="sttSection">
+            <h2>Speech-to-Text (STT)</h2>
+            <div class="stt-controls">
+                <button id="startSTTBtn" class="btn-danger">
+                    <span class="button-text">Start Mic</span>
                     <div class="spinner"></div>
                 </button>
-                <button id="disconnectBtn" style="display:none;">Disconnect</button>
+                <button id="stopSTTBtn" class="btn-secondary hidden">
+                    <span class="button-text">Stop Mic</span>
+                </button>
+                <button id="startForwardingBtn" class="btn-success" disabled>
+                    <span class="button-text">Start Forwarding</span>
+                    <div class="spinner"></div>
+                </button>
+                <button id="stopForwardingBtn" class="btn-warning-outline hidden">
+                    <span class="button-text">Stop Forwarding</span>
+                </button>
+            </div>
+
+            <div id="transcriptionDisplay" class="transcription-box">
+                <div class="transcription-header">
+                    <h3>Live Transcription</h3>
+                    <div class="transcription-actions">
+                        <button id="clearTranscriptionBtn">Clear</button>
+                        <button id="exportSubtitlesBtn">Export Subtitles</button>
+                        <button id="restartNovaBtn" title="Debug: close and reconnect Nova STT">Restart Nova
+                            STT</button>
+                    </div>
+                </div>
+                <div id="transcriptionContent"></div>
             </div>
         </div>
 
-        <!-- Media Output -->
+        <!-- Media & Debug -->
         <div class="section">
-            <h2>Media Output</h2>
-            <div id="media-container"></div>
-        </div>
-
-        <!-- Logs -->
-        <div class="section">
-            <h2>Logs</h2>
-            <textarea id="debugArea" readonly></textarea>
+            <h2>Output</h2>
+            <div id="media-container" style="margin-bottom: 1rem;"></div>
+            <details open>
+                <summary style="cursor: pointer; font-weight: 500; margin-bottom: 0.5rem;">Debug Logs</summary>
+                <textarea id="debugArea" readonly style="margin-top: 0.5rem;"></textarea>
+            </details>
         </div>
     </div>
 
-    <script>
-        // --- UI Element References ---
-        const UI = {
-            pageTitle: document.getElementById('pageTitle'),
-            publishBtn: document.getElementById('publishBtn'),
-            unpublishBtn: document.getElementById('unpublishBtn'),
-            connectBtn: document.getElementById('connectBtn'),
-            disconnectBtn: document.getElementById('disconnectBtn'),
-            generateSection: document.getElementById('generateSection'),
-            ttsText: document.getElementById('ttsText'),
-            generateBtn: document.getElementById('generateBtn'),
-            debugArea: document.getElementById('debugArea'),
-            mediaContainer: document.getElementById('media-container'),
-            sessionIdDisplay: document.getElementById('sessionIdDisplay'),
-            statusIndicator: document.getElementById('statusIndicator'),
-            publisherSection: document.getElementById('publisherSection'),
-            listenerSection: document.getElementById('listenerSection'),
-            listenerTitle: document.getElementById('listenerTitle'),
-        };
-
-        // --- State Variables ---
-        let peerConnection = null;  // The WebRTC connection object
-        let localSessionId = '';     // The session name from the URL
-        let userRole = 'player';     // 'player' or 'publisher', determined by the URL
-        let isPublished = false;    // Track if the session has been published
-
-        // --- Core Functions ---
-
-        /**
-         * Logs a message to the debug text area.
-         * @param {string} message The message to log.
-         */
-        function log(message) {
-            UI.debugArea.value += `[${new Date().toLocaleTimeString()}] ${message}\n`;
-            UI.debugArea.scrollTop = UI.debugArea.scrollHeight; // Auto-scroll
-        }
-
-        /**
-         * Manages the UI state, enabling/disabling elements and showing status.
-         * This prevents users from performing actions in the wrong order.
-         * @param {'initial' | 'publishing' | 'published' | 'unpublishing' | 'connecting' | 'connected' | 'disconnected'} state 
-         */
-        function updateUiState(state) {
-            // 1. Remove loading spinners from all buttons.
-            ['publishBtn', 'unpublishBtn', 'connectBtn', 'generateBtn'].forEach(id => UI[id].classList.remove('loading'));
-
-            // 2. Set default states.
-            UI.publishBtn.disabled = true;      // Disabled by default
-            UI.publishBtn.style.display = 'inline-flex'; //Show the publish button
-            UI.unpublishBtn.style.display = 'none';   //Hidden by default
-            UI.connectBtn.disabled = true;      //Disabled by default
-            UI.disconnectBtn.style.display = 'none';   //Hidden by default
-            UI.generateSection.style.opacity = '0.5'; // Grayed out by default
-            UI.generateSection.style.pointerEvents = 'none'; // Prevent clicks by default
-
-            /**
-             * Sets the status indicator's class name and text.
-             * @param {string} className The CSS class name for the status indicator.
-             * @param {string} text      The text to display in the status indicator.
-             */
-            const setStatus = (className, text) => {
-                UI.statusIndicator.className = className;
-                UI.statusIndicator.textContent = text;
-            };
-
-            switch (state) {
-                case 'initial':
-                    isPublished = false;
-                    setStatus('disconnected', 'Not Published');
-                    // Only the publisher can publish, and only if it hasn't been published yet.
-                    if (userRole === 'publisher') {
-                        UI.publishBtn.disabled = false;
-                    }
-                    UI.connectBtn.disabled = false; // Listeners and Publishers can always attempt to connect
-                    break;
-                case 'publishing':
-                    setStatus('connecting', 'Publishing...');
-                    UI.publishBtn.classList.add('loading');
-                    break;
-                case 'published':
-                    isPublished = true;
-                    setStatus('disconnected', 'Published');
-                    if (userRole === 'publisher') {
-                        // The publisher can now unpublish and generate speech.
-                        UI.publishBtn.style.display = 'none'; // Hide the publish button
-                        UI.unpublishBtn.style.display = 'inline-flex'; // Show the unpublish button
-                        UI.unpublishBtn.disabled = false;
-                        UI.generateSection.style.opacity = '1';
-                        UI.generateSection.style.pointerEvents = 'auto';
-                    }
-                    UI.connectBtn.disabled = false;
-                    log('✅ Session is live and ready for listeners.');
-                    break;
-                case 'unpublishing':
-                    setStatus('connecting', 'Unpublishing...');
-                    UI.unpublishBtn.classList.add('loading');
-                    UI.unpublishBtn.disabled = true;
-                    UI.connectBtn.disabled = true; // Prevent connecting while unpublishing
-                    break;
-                case 'connecting':
-                    setStatus('connecting', 'Connecting...');
-                    UI.connectBtn.classList.add('loading');
-                    // While connecting, the publisher can still unpublish if needed.
-                    if (userRole === 'publisher') {
-                        UI.publishBtn.style.display = 'none';
-                        UI.unpublishBtn.style.display = 'inline-flex';
-                        UI.unpublishBtn.disabled = true; // But don't allow clicking it while connecting
-                    }
-                    break;
-                case 'connected':
-                    setStatus('live', 'Live');
-                    UI.disconnectBtn.style.display = 'inline-flex';
-                    if (userRole === 'publisher') {
-                        // ***This is the fix***: Show/enable the unpublish button and enable speech generation for a connected publisher.
-                        UI.publishBtn.style.display = 'none';
-                        UI.unpublishBtn.style.display = 'inline-flex';
-                        UI.unpublishBtn.disabled = false;
-                        UI.generateSection.style.opacity = '1';
-                        UI.generateSection.style.pointerEvents = 'auto';
-                    }
-                    log('✅ Successfully connected! Listening for audio.');
-                    break;
-                case 'disconnected':
-                    // After disconnecting, go back to the published state if it was published before.
-                    isPublished ? updateUiState('published') : updateUiState('initial');
-                    break;
-            }
-        }
-
-        /**
-         * Publishes the session to make it available for listeners.
-         */
-        async function publishSession() {
-            updateUiState('publishing');
-            try {
-                log('📣 Publishing worker track to SFU...');
-                const res = await fetch(`/${localSessionId}/publish`, { method: 'POST' });
-                if (!res.ok) throw new Error(`Worker failed to publish: ${res.status} ${await res.text()}`);
-                updateUiState('published');
-            } catch (error) {
-                log(`❌ Error during publish: ${error.message}`);
-                updateUiState('initial');
-            }
-        }
-
-        /**
-         * Unpublishes the session, removing it from the SFU.
-         */
-        async function unpublishSession() {
-            updateUiState('unpublishing');
-            try {
-                log('🗑️ Unpublishing worker track from SFU...');
-                const res = await fetch(`/${localSessionId}/unpublish`, { method: 'POST' });
-                if (!res.ok) throw new Error(`Worker failed to unpublish: ${res.status} ${await res.text()}`);
-                log('✅ Session unpublished successfully.');
-                if (peerConnection) stopConnection(); // Disconnect the listener, if connected
-                updateUiState('initial');
-            } catch (error) {
-                log(`❌ Error during unpublish: ${error.message}`);
-                updateUiState('published');
-            }
-        }
-
-        /**
-         * Initiates the WebRTC connection to listen to the audio stream.
-         */
-        async function connectToListen() {
-            updateUiState('connecting');
-            try {
-                await startWebRTCPull();
-            } catch (error) {
-                log(`❌ Error during connect: ${error.message}`);
-                stopConnection();
-            }
-        }
-
-        /**
-         * Handles the WebRTC connection process.
-         */
-        async function startWebRTCPull() {
-            // 1. Create the PeerConnection.
-            peerConnection = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
-
-            // 2. Set up event handlers to monitor the connection.
-            peerConnection.oniceconnectionstatechange = () => {
-                log(`🚦 ICE state: ${peerConnection.iceConnectionState}`);
-                if (['connected', 'completed'].includes(peerConnection.iceConnectionState)) updateUiState('connected');
-                if (['failed', 'disconnected', 'closed'].includes(peerConnection.iceConnectionState)) {
-                    log(`❌ Connection lost or failed.`);
-                    stopConnection();
-                }
-            };
-
-            // 3. Set up the handler to receive the audio track
-            peerConnection.ontrack = (event) => {
-                log(`🎵 Received remote audio track.`);
-                const mediaElement = document.createElement('audio');
-                mediaElement.srcObject = event.streams[0];
-                mediaElement.autoplay = true;
-                mediaElement.controls = true;
-                UI.mediaContainer.innerHTML = '';
-                UI.mediaContainer.appendChild(mediaElement);
-            };
-
-            // 4. Configure the transceiver to receive audio
-            peerConnection.addTransceiver('audio', { direction: 'recvonly' });
-
-            // 5. Create and set the local description (the "offer").
-            const offer = await peerConnection.createOffer();
-            await peerConnection.setLocalDescription(offer);
-
-            // 6. Send the offer to the worker to establish the connection.
-            const res = await fetch(`/${localSessionId}/connect`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ sessionDescription: peerConnection.localDescription })
-            });
-
-            if (res.status === 400) throw new Error('Session has not been published yet.');
-            if (!res.ok) throw new Error(`Failed to connect via worker: ${res.status} ${await res.text()}`);
-
-            // 7. Set the remote description (the "answer")
-            const answer = await res.json();
-            await peerConnection.setRemoteDescription(answer.sessionDescription);
-            log('🤝 Set remote description successfully.');
-        }
-
-        /**
-         * Sends text to the worker to be synthesized into speech.
-         */
-        async function generateSpeech() {
-            const text = UI.ttsText.value.trim();
-            if (!text) { log('⚠️ Please enter some text.'); return; }
-            log(`💬 Sending text for TTS: "${text.substring(0, 50)}..."`);
-            UI.generateBtn.classList.add('loading');
-            UI.generateBtn.disabled = true;
-            try {
-                const res = await fetch(`/${localSessionId}/generate`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ text, format: "pcm_24000" }),
-                });
-                if (res.status !== 202) throw new Error(`Failed to generate audio: ${res.status} ${await res.text()}`);
-                log('✅ Audio generation request accepted.');
-            } catch (error) {
-                log(`❌ Error generating speech: ${error.message}`);
-            } finally {
-                UI.generateBtn.classList.remove('loading');
-                UI.generateBtn.disabled = false;
-            }
-        }
-
-        /**
-         * Closes the WebRTC connection and resets the UI.
-         */
-        function stopConnection() {
-            log('⏹️ Stopping connection...');
-            if (peerConnection) { peerConnection.close(); peerConnection = null; }
-            UI.mediaContainer.innerHTML = '';
-            updateUiState('disconnected');
-            log('🔄 UI reset.');
-        }
-
-        /**
-         * Sets up the UI based on the user's role (publisher or listener)
-         */
-        function setupUIForRole() {
-            if (userRole === 'publisher') {
-                UI.pageTitle.textContent = 'Publisher Console';
-                UI.publisherSection.style.display = 'block';
-                UI.generateSection.style.display = 'block';
-                UI.listenerTitle.textContent = 'Step 3: Listen In (Optional)';
-            } else {
-                UI.pageTitle.textContent = 'Listener';
-                UI.publisherSection.style.display = 'none';
-                UI.generateSection.style.display = 'none';
-                UI.listenerTitle.textContent = 'Connect to Listen';
-            }
-        }
-
-        /**
-         * Initial setup logic that runs when the page loads.
-         */
-        window.addEventListener('DOMContentLoaded', () => {
-            // 1. Parse the URL to get the session ID and user role.
-            const pathParts = window.location.pathname.split('/').filter(p => p);
-            if (pathParts.length < 2 || !['player', 'publisher'].includes(pathParts[1])) {
-                log('❌ Invalid URL. Expected: /<session-id>/player or /<session-id>/publisher.');
-                UI.sessionIdDisplay.textContent = 'INVALID URL';
-                return;
-            }
-            localSessionId = pathParts[0];
-            userRole = pathParts[1];
-            UI.sessionIdDisplay.textContent = `Session ID: ${localSessionId}`;
-
-            // 2. Setup the UI based on the user's role.
-            setupUIForRole();
-
-            // 3. Wire up event listeners based on the user's role.
-            if (userRole === 'publisher') {
-                UI.publishBtn.addEventListener('click', publishSession);
-                UI.unpublishBtn.addEventListener('click', unpublishSession);
-                UI.generateBtn.addEventListener('click', generateSpeech);
-            }
-
-            // 4. All users can connect/disconnect
-            UI.connectBtn.addEventListener('click', connectToListen);
-            UI.disconnectBtn.addEventListener('click', stopConnection);
-
-            // 5. Set the initial UI state.
-            updateUiState('initial');
-        });
-    </script>
+    <footer class="footer">
+        <span aria-hidden="true">♥</span> made with cloudflare ·
+        <a id="repoLink" href="https://github.com/cloudflare/realtime-examples/tree/main/tts-ws" target="_blank"
+            rel="noopener noreferrer">GitHub</a>
+    </footer>
+    <script type="module" src="/assets/player.js"></script>
 </body>
 
 </html>

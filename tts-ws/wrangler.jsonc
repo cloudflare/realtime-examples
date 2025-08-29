@@ -10,16 +10,29 @@
 	"migrations": [
 		{
 			"new_sqlite_classes": [
-				"AudioSession"
+				"TTSAdapter"
 			],
 			"tag": "v1"
-		}
+		},
+		{
+			"new_sqlite_classes": [
+				"STTAdapter"
+			],
+			"tag": "v2"
+		},
 	],
+	"assets": {
+        "directory": "public"
+    },
 	"durable_objects": {
 		"bindings": [
 			{
-				"class_name": "AudioSession",
-				"name": "AUDIO_SESSION"
+				"class_name": "TTSAdapter",
+				"name": "TTS_ADAPTER"
+			},
+			{
+				"class_name": "STTAdapter",
+				"name": "STT_ADAPTER"
 			}
 		]
 	},
@@ -28,7 +41,7 @@
 	},
 	"vars": {
 		"SFU_API_BASE": "https://rtc.live.cloudflare.com/v1",
-		"ELEVENLABS_VOICE_ID": "21m00Tcm4TlvDq8ikWAM",
-		"REALTIME_SFU_APP_ID": "c57b0ed7694514a0088a41fb53218173",
+		"CF_ACCOUNT": "8477399eb04accc1792af96aeaa25222",
+		"REALTIME_SFU_APP_ID": "66e52edd9e080a5c01c0b4d559fd0e3c",
 	}
 }

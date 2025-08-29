@@ -1,16 +1,23 @@
 {
-	"name": "tts-ws",
-	"version": "0.0.0",
+	"name": "cf-realtime-audio",
+	"version": "1.0.0",
 	"private": true,
 	"scripts": {
 		"deploy": "wrangler deploy",
 		"dev": "wrangler dev",
 		"start": "wrangler dev",
 		"cf-typegen": "wrangler types",
-		"proto": "protoc --ts_out src --proto_path src src/packet.proto"
+		"proto": "protoc --ts_out src --proto_path src src/packet.proto",
+		"tooling:bootstrap": "bash scripts/bootstrap.sh",
+		"wasm:build": "bash scripts/build-speexdsp-wasm.sh",
+		"build:web": "npm run build:web:js && npm run build:web:css",
+		"build:web:js": "esbuild src/web/app.ts --bundle --minify --sourcemap --outfile=public/assets/player.js",
+		"build:web:css": "esbuild src/web/styles/player.css --bundle --minify --outfile=public/assets/player.css",
+		"watch:web": "esbuild src/web/app.ts src/web/styles/player.css --bundle --sourcemap --outdir=public/assets --entry-names=player --watch"
 	},
 	"devDependencies": {
 		"@protobuf-ts/plugin": "^2.11.1",
+		"esbuild": "^0.19.0",
 		"typescript": "^5.5.2",
 		"wrangler": "^4.28.0"
 	}
