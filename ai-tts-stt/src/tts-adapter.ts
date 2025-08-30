@@ -483,14 +483,9 @@ export class TTSAdapter extends DurableObject<Env> {
 	/**
 	 * Handles the POST /<session-name>/generate request.
 	 */
-	private handleGenerate(request: Request): Response {
-		// In a Durable Object, to run a task in the background, we call an async method
-		// but DO NOT `await` it. The DO runtime will keep the object alive until the
-		// promise returned by the method settles. This is the correct pattern for
-		// "fire-and-forget" tasks inside a DO.
-		// We add a .catch() to prevent unhandled promise rejection warnings in the logs.
-		this.processGenerateRequest(request).catch((err) => {
-			this.logger.error(`Unhandled error in background generate task:`, err);
+	private async handleGenerate(request: Request): Promise<Response> {
+		await this.processGenerateRequest(request).catch((err) => {
+			this.logger.error(`Error in generate task:`, err);
 		});
 
 		// We can immediately return a 202 Accepted response to the client.
@@ -577,11 +572,12 @@ export class TTSAdapter extends DurableObject<Env> {
 			this.setupAuraMessageHandlers(ws);
 
 			// Set up close handler
-			ws.addEventListener('close', async (event) => {
+			ws.addEventListener('close', (event) => {
 				this.logger.log(`Aura WebSocket closed: ${event.code}`);
 				this.auraWebSocket = null;
 				if (this.stateStore.state.allowReconnect && this.stateStore.state.reconnectAttempts < this.maxReconnectAttempts) {
-					this.scheduleTTSAuraReconnect();
+					// Fire-and-forget reconnection scheduling
+					this.scheduleTTSAuraReconnect().catch(() => {});
 				}
 			});
 
@@ -594,18 +590,25 @@ export class TTSAdapter extends DurableObject<Env> {
 				reject(new Error('WebSocket connection timeout'));
 			}, 10000); // 10 second timeout
 
-			ws.addEventListener('open', async () => {
+			ws.addEventListener('open', () => {
 				clearTimeout(timeout);
 				this.logger.log(`Aura WebSocket connected (via open event)`);
 				// Clear reconnection state on successful connection in single update
-				await this.stateStore.update({
-					reconnectAttempts: 0,
-					reconnectType: undefined,
-					reconnectDeadline: undefined,
-				});
-				this.auraWebSocket = ws;
-				this.setupAuraMessageHandlers(ws);
-				resolve(ws);
+				this.stateStore
+					.update({
+						reconnectAttempts: 0,
+						reconnectType: undefined,
+						reconnectDeadline: undefined,
+					})
+					.then(() => {
+						this.auraWebSocket = ws;
+						this.setupAuraMessageHandlers(ws);
+						resolve(ws);
+					})
+					.catch((err) => {
+						this.logger.error(`Failed to update state on Aura WS open:`, err);
+						reject(err);
+					});
 			});
 
 			ws.addEventListener('error', (event) => {
@@ -614,11 +617,12 @@ export class TTSAdapter extends DurableObject<Env> {
 				reject(new Error('WebSocket connection failed'));
 			});
 
-			ws.addEventListener('close', async (event) => {
+			ws.addEventListener('close', (event) => {
 				this.logger.log(`Aura WebSocket closed: ${event.code}`);
 				this.auraWebSocket = null;
 				if (this.stateStore.state.allowReconnect && this.stateStore.state.reconnectAttempts < this.maxReconnectAttempts) {
-					this.scheduleTTSAuraReconnect();
+					// Fire-and-forget reconnection scheduling
+					this.scheduleTTSAuraReconnect().catch(() => {});
 				}
 			});
 		});
