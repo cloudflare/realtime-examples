@@ -689,7 +689,7 @@ export class STTAdapter extends DurableObject<Env> {
 			this.logger.error(`Nova WebSocket error:`, event);
 		});
 
-		ws.addEventListener('close', async (event) => {
+		ws.addEventListener('close', (event) => {
 			this.logger.log(`Nova WebSocket closed: ${event.code}`);
 			this.novaSTTWebSocket = null;
 
@@ -723,12 +723,15 @@ export class STTAdapter extends DurableObject<Env> {
 					);
 				}
 
-				await this.stateStore.update({
-					closingDueToInactivity: false,
-					allowReconnect: false,
-				});
+				this.stateStore
+					.update({
+						closingDueToInactivity: false,
+						allowReconnect: false,
+					})
+					.catch(() => {});
 			} else if (this.stateStore.state.allowReconnect && this.stateStore.state.reconnectAttempts < this.maxReconnectAttempts) {
-				this.scheduleSTTReconnect();
+				// Fire-and-forget reconnection scheduling
+				this.scheduleSTTReconnect().catch(() => {});
 			}
 		});
 	}

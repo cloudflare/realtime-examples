@@ -14,8 +14,10 @@ After deployment, you can interact with the demo entirely from your browser. It 
    - npm run watch:web
    - npm run dev
 4. Open:
-   - `http://localhost:8787/<session-name>/publisher`
-   - `http://localhost:8787/<session-name>/player`
+   - Local dev: `http://localhost:8787/<session-name>/(publisher|player)` (good for UI iteration)
+   - End-to-end audio (recommended): deploy first, then open `https://<worker-name>.<subdomain>.workers.dev/<session-name>/(publisher|player)`
+
+   Note: To test TTS/STT end-to-end and keep WebSocket flows stable, deploy the Worker.
 
 ## How It Works
 
@@ -125,8 +127,8 @@ The frontend is a modular TypeScript app that needs to be bundled before you can
     ```
 
 > URL patterns:
-> - Local: `http://localhost:8787/<session-name>/(publisher|player)`
-> - Deployed: `https://<worker-name>.<subdomain>.workers.dev/<session-name>/(publisher|player)`
+> - Local dev: `http://localhost:8787/<session-name>/(publisher|player)` (for UI iteration)
+> - Deployed (recommended for end-to-end TTS/STT): `https://<worker-name>.<subdomain>.workers.dev/<session-name>/(publisher|player)`
 
 ## Deploy and Use
 
@@ -173,6 +175,9 @@ The frontend is a modular TypeScript app that needs to be bundled before you can
     Note: This endpoint is intentionally unauthenticated for this demo. Add authentication before using in production.
 
 ## Troubleshooting
+
+*   **End-to-end audio not working in dev?**
+    - Deploy the Worker and use the deployed URL. This is the recommended way to test TTS/STT end-to-end.
 
 *   **Stale UI or 404s on assets?**
     - As in Deploy step, run `npm run build:web`.
