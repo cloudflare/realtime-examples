@@ -1,0 +1,35 @@
+/**
+ * Wrangler configuration for the WebRTC Video → JPEG demo.
+ */
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "cf-realtime-video-to-jpeg",
+	"main": "src/index.ts",
+	"compatibility_date": "2025-08-06",
+	"migrations": [
+		{
+			"new_sqlite_classes": [
+				"VideoAdapter"
+			],
+			"tag": "v1"
+		}
+	],
+	"assets": {
+		"directory": "public"
+	},
+	"durable_objects": {
+		"bindings": [
+			{
+				"class_name": "VideoAdapter",
+				"name": "VIDEO_ADAPTER"
+			}
+		]
+	},
+	"observability": {
+		"enabled": true
+	},
+	"vars": {
+		"SFU_API_BASE": "https://rtc.live.cloudflare.com/v1",
+		"REALTIME_SFU_APP_ID": "006c9db1a46b95b1b0cec2d9fc63c8d7",
+	}
+}

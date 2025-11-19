@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Cloudflare Realtime: Video to JPEG</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body {
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        margin: 0;
+        padding: 1.5rem;
+        background: #0f172a;
+        color: #e5e7eb;
+      }
+      h1 {
+        margin-top: 0;
+        font-size: 1.4rem;
+      }
+      .layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+        gap: 1.5rem;
+        align-items: flex-start;
+      }
+      .panel {
+        background: #020617;
+        border-radius: 0.75rem;
+        padding: 1rem 1.25rem;
+        border: 1px solid #1e293b;
+      }
+      .panel h2 {
+        margin-top: 0;
+        font-size: 1.1rem;
+      }
+      .video-box,
+      .jpeg-box {
+        background: #020617;
+        border-radius: 0.75rem;
+        border: 1px dashed #1e293b;
+        min-height: 200px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+      }
+      .video-box video,
+      .jpeg-box img {
+        max-width: 100%;
+        max-height: 100%;
+        object-fit: contain;
+      }
+      button {
+        appearance: none;
+        border-radius: 999px;
+        border: 1px solid #4b5563;
+        background: #111827;
+        color: #e5e7eb;
+        padding: 0.4rem 0.9rem;
+        font-size: 0.9rem;
+        cursor: pointer;
+        margin-right: 0.5rem;
+      }
+      button:hover {
+        background: #1f2937;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      .controls {
+        margin-bottom: 0.75rem;
+      }
+      .note {
+        font-size: 0.8rem;
+        color: #9ca3af;
+        margin-top: 0.5rem;
+      }
+      .status {
+        margin-top: 0.75rem;
+        font-size: 0.85rem;
+        color: #9ca3af;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Cloudflare Realtime: WebRTC Video to JPEG (Adapter Demo)</h1>
+    <p class="note">
+      This demo captures your camera with WebRTC, publishes it to the Realtime SFU, and displays
+      approximately 1 FPS JPEG snapshots streamed via the WebSocket adapter.
+    </p>
+
+    <div class="layout">
+      <section class="panel">
+        <h2>Publisher (Camera → SFU)</h2>
+        <div class="controls">
+          <button id="btnConnectCamera">Connect Camera</button>
+          <button id="btnStartStream" disabled>Start JPEG Stream</button>
+          <button id="btnStopStream" disabled>Stop JPEG Stream</button>
+          <button id="btnResetSession">Reset Session</button>
+        </div>
+        <div id="videoContainer" class="video-box">
+          <span>Local/remote video preview will appear here.</span>
+        </div>
+        <p id="statusText" class="status">Status: Ready.</p>
+      </section>
+
+      <section class="panel">
+        <h2>Viewer (JPEG Stream)</h2>
+        <div id="jpegContainer" class="jpeg-box">
+          <span>JPEG snapshots will appear here.</span>
+        </div>
+        <p class="note">
+          Viewer connects via <code>WS /&lt;session&gt;/video/viewer</code> and receives
+          binary JPEG frames from the VideoAdapter Durable Object.
+        </p>
+      </section>
+    </div>
+    <script type="module" src="/assets/app.js"></script>
+  </body>
+</html>
