@@ -1,0 +1,22 @@
+{
+  "name": "cf-realtime-video-to-jpeg",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "start": "wrangler dev",
+    "cf-typegen": "wrangler types",
+    "build:web": "npm run build:web:js",
+    "build:web:js": "esbuild src/web/app.ts --bundle --minify --sourcemap --outfile=public/assets/app.js",
+    "watch:web": "esbuild src/web/app.ts --bundle --sourcemap --outfile=public/assets/app.js --watch"
+  },
+  "dependencies": {
+    "@protobuf-ts/runtime": "^2.11.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.2",
+    "wrangler": "^4.28.0",
+    "esbuild": "^0.19.0"
+  }
+}
