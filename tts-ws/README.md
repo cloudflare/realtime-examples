@@ -1,5 +1,11 @@
 # Realtime TTS Audio Streaming with Cloudflare Workers
 
+> Example status: **Experimental**
+>
+> This example keeps provider and Realtime SFU credentials on the server, but
+> administrative and destructive operations are not authenticated. It is not a
+> production reference.
+
 This folder demonstrates a realtime text-to-speech (TTS) audio streaming solution using Cloudflare Workers, Durable Objects, and Cloudflare's Realtime serverless SFU. Audio is generated via the ElevenLabs API and streamed to clients, with the worker acting as a secure proxy so **no secrets are ever exposed to the browser**.
 
 The demo is designed to be fully interactive from the browser after deployment, allowing for multiple, sequential TTS generations within a single session, and it provides two distinct interfaces: a **Publisher Console** for controlling the session and a **Listener Page** for passive listening.

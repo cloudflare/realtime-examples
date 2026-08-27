@@ -1,6 +1,15 @@
 # WHIP-WHEP Server
 
-WHIP and WHEP server implemented on top of Calls API
+> Example status: **Legacy**
+>
+> This example uses stale protocol drafts and terminology, configures the
+> Realtime SFU secret as a plain variable, and does not authorize or fully clean
+> up ingest and playback resources. Do not use it as a production starting
+> point.
+
+WHIP and WHEP server implemented on top of the Realtime SFU API. The `CALLS_*`
+environment variable names are retained for compatibility with the
+implementation.
 
 ## Usage
 ### Configuration

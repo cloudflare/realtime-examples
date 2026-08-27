@@ -1,5 +1,11 @@
 # Cloudflare Realtime Video: WebRTC → JPEG Demo
 
+> Example status: **Experimental**
+>
+> This example keeps the Realtime SFU credential on the server, but publisher
+> and destructive operations are not authenticated. It is not a production
+> reference.
+
 Stream your camera through the **Cloudflare Realtime SFU** and view it as JPEG snapshots (~1 FPS) using the **WebSocket media transport adapter**.
 
 After deployment, you can share a session with others entirely from your browser. It provides two interfaces: a **Publisher** page for camera control and a **Viewer** page for watching the JPEG stream.

@@ -1,0 +1,43 @@
+name: Validate examples
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  foundation:
+    runs-on: ubuntu-latest
+    outputs:
+      blueprint-matrix: ${{ steps.blueprints.outputs.matrix }}
+      blueprint-count: ${{ steps.blueprints.outputs.count }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - id: blueprints
+        run: node scripts/blueprint-matrix.mjs --github-output >> "$GITHUB_OUTPUT"
+
+  active-blueprints:
+    needs: foundation
+    if: ${{ needs.foundation.outputs.blueprint-count != '0' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.foundation.outputs.blueprint-matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node_version }}
+      - run: npm ci
+      - run: node scripts/run-blueprint-checks.mjs "${{ matrix.path }}"

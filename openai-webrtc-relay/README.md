@@ -1,6 +1,15 @@
-# Calls - OpenAI demo
+# Realtime SFU - OpenAI WebRTC relay
 
-This is a simple example of how you can set up OpenAI's WebRTC realtime API with Cloudflare Calls.
+> Example status: **Legacy**
+>
+> This example uses stale configuration, allows unauthenticated resource
+> creation, and does not implement complete teardown. Its checked-in
+> configuration also illustrates plain variables for credentials. Do not use it
+> as a production starting point.
+
+This is a historical example of connecting OpenAI's WebRTC Realtime API with
+Cloudflare Realtime SFU. The `CALLS_*` environment variable names are retained
+for compatibility with the implementation.
 
 ## Configuration
 

@@ -1,0 +1,224 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/cloudflare/realtime-examples/schemas/blueprint.schema.json",
+  "title": "Realtime SFU blueprint metadata",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "id",
+    "title",
+    "summary",
+    "maturity",
+    "status",
+    "topology",
+    "components",
+    "entrypoints",
+    "security",
+    "lifecycle",
+    "ci",
+    "maintainer"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "maturity": {
+      "enum": [
+        "maintained",
+        "experimental"
+      ]
+    },
+    "status": {
+      "enum": [
+        "active",
+        "archived"
+      ]
+    },
+    "topology": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "publishers",
+        "subscribers",
+        "media",
+        "datachannels"
+      ],
+      "properties": {
+        "publishers": {
+          "enum": [
+            "one",
+            "few",
+            "many",
+            "none"
+          ]
+        },
+        "subscribers": {
+          "enum": [
+            "one",
+            "few",
+            "many",
+            "none"
+          ]
+        },
+        "media": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "audio",
+              "video"
+            ]
+          }
+        },
+        "datachannels": {
+          "type": "boolean"
+        }
+      }
+    },
+    "components": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "entrypoints": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "demo",
+        "docs"
+      ],
+      "properties": {
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "demo": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "docs": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "security": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "browser_has_sfu_secret",
+        "authentication",
+        "authorization"
+      ],
+      "properties": {
+        "browser_has_sfu_secret": {
+          "const": false
+        },
+        "authentication": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authorization": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reconnect",
+        "cleanup"
+      ],
+      "properties": {
+        "reconnect": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cleanup": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "ci": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node_version",
+        "install",
+        "checks",
+        "browser_asset_paths"
+      ],
+      "properties": {
+        "node_version": {
+          "type": "string",
+          "pattern": "^[0-9]+(?:\\.[0-9]+){0,2}$"
+        },
+        "install": {
+          "type": "string",
+          "minLength": 1
+        },
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "run"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "run": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "browser_asset_paths": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "maintainer": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

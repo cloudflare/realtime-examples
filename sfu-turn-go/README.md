@@ -1,14 +1,28 @@
-# TURN to TURN example in Go
+# Realtime SFU and TURN DataChannels in Go
 
-This command line example written in Go shows how to fetch TURN credentials from the Cloudflare API for two PeerConnections.
-Then configures two PeerConnection in Pion with the TURN credentials, both set with the relay only policy.
-Then it connects the two PeerConnections and estalishes a data channel between the two peers.
+> Example status: **Legacy**
+>
+> This command-line example accepts API credentials as arguments and currently
+> logs generated TURN credentials. Use only short-lived test credentials in an
+> isolated environment.
+
+This Go example connects Pion PeerConnections through Cloudflare TURN and
+exchanges DataChannels through Cloudflare Realtime SFU.
 
 ## Building
 
-Running `go build` should result in a binary called `turn-go` getting build.
+Run:
+
+```bash
+go build
+```
 
 ## Executing
 
-Simply invoke the `turn-go` binary with two arguments: the API token and the TURN roken.
-You get these two parameters when you create a new TURN application on your Cloudflare dashboard.
+The program requires separate TURN and Realtime SFU credentials:
+
+```bash
+./sfu-turn-go <turn-api-token> <turn-account-id> <sfu-api-token> <sfu-app-id>
+```
+
+Command-line arguments may be visible in shell history and process listings.
