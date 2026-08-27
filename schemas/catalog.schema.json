@@ -1,0 +1,207 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/cloudflare/realtime-examples/schemas/catalog.schema.json",
+  "title": "Realtime examples catalog",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "repository",
+    "maturity_states",
+    "examples"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "repository": {
+      "type": "string",
+      "minLength": 1
+    },
+    "maturity_states": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maintained",
+        "experimental",
+        "legacy"
+      ],
+      "properties": {
+        "maintained": {
+          "$ref": "#/$defs/maturityState"
+        },
+        "experimental": {
+          "$ref": "#/$defs/maturityState"
+        },
+        "legacy": {
+          "$ref": "#/$defs/maturityState"
+        }
+      }
+    },
+    "examples": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/example"
+      }
+    }
+  },
+  "$defs": {
+    "maturityState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description"
+      ],
+      "properties": {
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "example": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "path",
+        "kind",
+        "summary",
+        "category",
+        "difficulty",
+        "components",
+        "maturity",
+        "recommended_starting_point",
+        "setup_time_minutes",
+        "hosted_demo",
+        "architecture",
+        "credential_boundary",
+        "known_limitations"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^(?:blueprints/)?[a-z0-9]+(?:-[a-z0-9]+)*$"
+        },
+        "kind": {
+          "enum": [
+            "example",
+            "blueprint"
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "category": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+        },
+        "difficulty": {
+          "enum": [
+            "beginner",
+            "intermediate",
+            "advanced"
+          ]
+        },
+        "components": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "maturity": {
+          "enum": [
+            "maintained",
+            "experimental",
+            "legacy"
+          ]
+        },
+        "recommended_starting_point": {
+          "type": "boolean"
+        },
+        "setup_time_minutes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "hosted_demo": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "architecture": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "credential_boundary": {
+          "enum": [
+            "server",
+            "browser",
+            "command-line"
+          ]
+        },
+        "known_limitations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "blueprint"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "path": {
+                "type": "string",
+                "pattern": "^blueprints/[a-z0-9]+(?:-[a-z0-9]+)*$"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "maturity": {
+                "const": "legacy"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "recommended_starting_point": {
+                "const": false
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

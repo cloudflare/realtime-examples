@@ -1,0 +1,243 @@
+version: 1
+repository: cloudflare/realtime-examples
+
+maturity_states:
+  maintained:
+    description: Actively owned, current, documented, and covered by declared checks.
+  experimental:
+    description: Active capability demonstration with incomplete validation or hardening.
+  legacy:
+    description: Educational or historical sample that is not a recommended architecture.
+
+examples:
+  - id: ai-tts-stt
+    title: Realtime audio TTS and STT
+    path: ai-tts-stt
+    kind: example
+    summary: Bidirectional text-to-speech and speech-to-text with Workers AI.
+    category: ai-audio
+    difficulty: advanced
+    components:
+      - browser
+      - Worker
+      - Durable Objects
+      - Realtime SFU
+      - WebSocket media adapters
+      - Workers AI
+    maturity: experimental
+    recommended_starting_point: true
+    setup_time_minutes: null
+    hosted_demo: null
+    architecture: null
+    credential_boundary: server
+    known_limitations:
+      - Public demo operations, including destructive cleanup, are not authenticated.
+      - Clean deployment still requires account-specific configuration.
+      - The example does not have repository-wide independent validation.
+
+  - id: video-to-jpeg
+    title: WebRTC video to JPEG
+    path: video-to-jpeg
+    kind: example
+    summary: Convert WebRTC video into JPEG frames with a WebSocket media adapter.
+    category: media-processing
+    difficulty: intermediate
+    components:
+      - browser
+      - Worker
+      - Durable Object
+      - Realtime SFU
+      - WebSocket media adapter
+    maturity: experimental
+    recommended_starting_point: true
+    setup_time_minutes: null
+    hosted_demo: null
+    architecture: video-to-jpeg/ARCHITECTURE.md
+    credential_boundary: server
+    known_limitations:
+      - Publisher and destructive operations are not authenticated.
+      - Rate limiting and abuse controls are not implemented.
+      - The example does not have repository-wide independent validation.
+
+  - id: tts-ws
+    title: Realtime TTS audio streaming
+    path: tts-ws
+    kind: example
+    summary: Broadcast text-to-speech audio from an external AI provider.
+    category: ai-audio
+    difficulty: advanced
+    components:
+      - browser
+      - Worker
+      - Durable Object
+      - Realtime SFU
+      - WebSocket media adapter
+      - ElevenLabs
+    maturity: experimental
+    recommended_starting_point: false
+    setup_time_minutes: null
+    hosted_demo: null
+    architecture: null
+    credential_boundary: server
+    known_limitations:
+      - Administrative and destructive operations are not authenticated.
+      - The example does not have automated end-to-end validation.
+      - The AI voice blueprint may supersede this example.
+
+  - id: echo
+    title: Media track echo
+    path: echo
+    kind: example
+    summary: Publish and subscribe to audio and video tracks in one browser.
+    category: media-primitive
+    difficulty: beginner
+    components:
+      - browser
+      - Realtime SFU
+    maturity: legacy
+    recommended_starting_point: false
+    setup_time_minutes: null
+    hosted_demo: null
+    architecture: null
+    credential_boundary: browser
+    known_limitations:
+      - The Realtime SFU bearer token is placed in browser code.
+      - The example uses stale Calls terminology.
+      - It has no application authentication, authorization, or cleanup boundary.
+
+  - id: echo-datachannels
+    title: DataChannel echo
+    path: echo-datachannels
+    kind: example
+    summary: Publish and subscribe to a Realtime SFU DataChannel.
+    category: datachannel-primitive
+    difficulty: intermediate
+    components:
+      - browser
+      - Realtime SFU
+    maturity: legacy
+    recommended_starting_point: false
+    setup_time_minutes: null
+    hosted_demo: null
+    architecture: null
+    credential_boundary: browser
+    known_limitations:
+      - The Realtime SFU bearer token is placed in browser code.
+      - The example uses stale Calls terminology.
+      - It has no application authentication, authorization, or cleanup boundary.
+      - The example does not wait for connected and open states, validate API responses, or close DataChannels.
+
+  - id: echo-simulcast
+    title: Simulcast echo
+    path: echo-simulcast
+    kind: example
+    summary: Publish simulcast layers and pull a selected video quality.
+    category: media-primitive
+    difficulty: intermediate
+    components:
+      - browser
+      - Realtime SFU
+    maturity: legacy
+    recommended_starting_point: false
+    setup_time_minutes: null
+    hosted_demo: null
+    architecture: null
+    credential_boundary: browser
+    known_limitations:
+      - The Realtime SFU bearer token is placed in browser code.
+      - The example uses stale Calls terminology.
+      - It has no application authentication, authorization, or cleanup boundary.
+
+  - id: openai-webrtc-relay
+    title: OpenAI WebRTC relay
+    path: openai-webrtc-relay
+    kind: example
+    summary: Relay audio between a browser and an OpenAI WebRTC endpoint.
+    category: ai-audio
+    difficulty: advanced
+    components:
+      - browser
+      - Worker
+      - Realtime SFU
+      - OpenAI Realtime API
+    maturity: legacy
+    recommended_starting_point: false
+    setup_time_minutes: null
+    hosted_demo: null
+    architecture: null
+    credential_boundary: server
+    known_limitations:
+      - The setup instructions place API credentials in plain Wrangler variables.
+      - The public endpoint can create upstream resources without authentication.
+      - Realtime SFU and model resources are not explicitly cleaned up.
+      - The example uses stale Calls terminology and model configuration.
+
+  - id: sfu-turn-go
+    title: Realtime SFU and TURN DataChannels in Go
+    path: sfu-turn-go
+    kind: example
+    summary: Connect Pion peers through TURN and exchange DataChannels through Realtime SFU.
+    category: turn-and-sfu-primitive
+    difficulty: advanced
+    components:
+      - Go
+      - Pion
+      - Realtime SFU
+      - TURN
+    maturity: legacy
+    recommended_starting_point: false
+    setup_time_minutes: null
+    hosted_demo: null
+    architecture: null
+    credential_boundary: command-line
+    known_limitations:
+      - API credentials are accepted through command-line arguments.
+      - Generated TURN credentials are written to logs.
+      - The example does not have automated end-to-end validation.
+
+  - id: turn-go
+    title: TURN to TURN DataChannel in Go
+    path: turn-go
+    kind: example
+    summary: Connect two Pion peers using Cloudflare TURN relay-only transport.
+    category: turn-primitive
+    difficulty: intermediate
+    components:
+      - Go
+      - Pion
+      - TURN
+    maturity: legacy
+    recommended_starting_point: false
+    setup_time_minutes: null
+    hosted_demo: null
+    architecture: null
+    credential_boundary: command-line
+    known_limitations:
+      - API credentials are accepted through command-line arguments.
+      - Generated TURN credentials are written to logs.
+      - The example does not define a production credential-delivery boundary.
+
+  - id: whip-whep-server
+    title: WHIP and WHEP Worker
+    path: whip-whep-server
+    kind: example
+    summary: Accept WHIP ingest and provide WHEP playback through a Worker.
+    category: broadcast
+    difficulty: advanced
+    components:
+      - Worker
+      - Durable Object
+      - Realtime SFU
+      - WHIP
+      - WHEP
+    maturity: legacy
+    recommended_starting_point: false
+    setup_time_minutes: null
+    hosted_demo: null
+    architecture: null
+    credential_boundary: server
+    known_limitations:
+      - The setup instructions place the Realtime SFU secret in plain Wrangler variables.
+      - Ingest, playback, and destructive operations are not authorized.
+      - Teardown does not close all Realtime SFU resources.
+      - The implementation uses stale Calls terminology and older protocol drafts.

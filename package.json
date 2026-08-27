@@ -1,0 +1,21 @@
+{
+  "name": "cloudflare-realtime-examples",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "check": "npm run validate:metadata && npm run validate:links && npm run scan:secrets && npm run test:foundation && npm run matrix:blueprints",
+    "validate:metadata": "node scripts/validate-metadata.mjs",
+    "validate:links": "node scripts/validate-links.mjs",
+    "scan:secrets": "node scripts/scan-secrets.mjs",
+    "test:foundation": "node --test scripts/test/*.test.mjs",
+    "matrix:blueprints": "node scripts/blueprint-matrix.mjs"
+  },
+  "devDependencies": {
+    "ajv": "^8.17.1",
+    "yaml": "^2.8.1"
+  }
+}
