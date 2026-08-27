@@ -1,239 +1,264 @@
-
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-
-<head>
+  <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-</head>
-
-<body>
-    <div class="grid">
-        <h1 id="heading">Calls DataChannel Test</h1>
-        <p>This example establishes two datachannels: one publishes data and the other one subscribes, the test measures how fast a message travels to and from the server.</p>
+    <meta
+      name="description"
+      content="Test Cloudflare Realtime SFU DataChannel reliability, waitForAck, and canReply."
+    />
+    <title>Realtime SFU DataChannels</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="app-header">
         <div>
-            <button id="dc-start" style="display: none">Start test</button>
-            <p id="dc-stats">&nbsp;</p>
+          <p class="product-name">Cloudflare Realtime</p>
+          <h1>Realtime SFU DataChannels</h1>
+          <p class="intro">
+            Connect a publisher and subscriber, open a
+            <code>waitForAck</code> gate, and send a reply with
+            <code>canReply</code>. Credentials remain in the local Node server.
+          </p>
         </div>
-    </div>
-    <script type="module">
-        // This is the App ID from the dashboard that identifies this Calls Application.
-        // https://dash.cloudflare.com/?to=/:account/calls
-        // Note: Calls sessions are limited to interacting with sessions in the same App ID.
-        const APP_ID = "$APP_ID";
-        // ❗❗❗ DO NOT USE YOUR TOKEN IN THE BROWSER FOR PRODUCTION. It should be kept and used server-side.
-        const APP_TOKEN = "$APP_TOKEN";
-        // We'll use this for authentication when making requests to the Calls API.
-        const headers = {
-            Authorization: `Bearer ${APP_TOKEN}`,
-        };
-        const EXTRA_QUERYPARAMS = ""
-        const API_BASE = `https://rtc.live.cloudflare.com/v1/apps/${APP_ID}`;
+        <div class="session-actions" aria-label="Session controls">
+          <button id="connect-button" class="button primary" type="button">
+            Connect endpoints
+          </button>
+          <button id="teardown-button" class="button" type="button">
+            Teardown
+          </button>
+        </div>
+      </header>
 
-        const urlParams = new URLSearchParams(window.location.search);
-        const createOffer = !!urlParams.get('createOffer');
+      <section class="connection-strip" aria-label="Connection status">
+        <p id="status" role="status" aria-live="polite"></p>
+        <dl class="peer-states">
+          <div>
+            <dt>Publisher</dt>
+            <dd id="publisher-connection" class="state-badge">new</dd>
+          </div>
+          <div>
+            <dt>Subscriber</dt>
+            <dd id="subscriber-connection" class="state-badge">new</dd>
+          </div>
+        </dl>
+      </section>
 
-        const echoMagic = crypto.randomUUID()
-        const dcStartButton = document.getElementById("dc-start")
-        const dcStats = document.getElementById("dc-stats")
+      <aside class="gate-note">
+        <strong><code>waitForAck</code> is a readiness gate, not a durable queue.</strong>
+        <span>
+          The SFU may retain bounded early traffic. Send the ACK before traffic
+          that must be delivered.
+        </span>
+      </aside>
 
-        const dcSamples = []
+      <section class="panel reliable-panel" aria-labelledby="reliable-title">
+        <header class="panel-header">
+          <div>
+            <h2 id="reliable-title">Reliable ordered channel</h2>
+            <p>Publisher → Realtime SFU → subscriber</p>
+          </div>
+          <div class="channel-states">
+            <span
+              class="state-badge"
+              data-channel-state="reliable-ordered"
+              data-state="new"
+              >new</span
+            >
+            <span id="gate-state" class="gate-badge" data-state="closed"
+              >gate closed</span
+            >
+          </div>
+        </header>
 
-        const session1 = { id: await createCallsSession(), peerConnection: await createPeerConnection() }
-        await establishDataChannelTransport(session1, createOffer)
-        session1.peerConnection.ondatachannel = (ev) => {
-            const dc = ev.channel
-            dc.onmessage = (m) => console.log(m)
-        }
+        <div class="endpoint-grid">
+          <section class="endpoint">
+            <header class="endpoint-header">
+              <h3>Publisher</h3>
+              <span>send</span>
+            </header>
 
-        const session2 = { id: await createCallsSession(), peerConnection: await createPeerConnection() }
-        await establishDataChannelTransport(session2, createOffer)
+            <div class="control-group">
+              <h4>Before the ACK</h4>
+              <p>
+                Send a disposable probe and confirm it stays hidden while the
+                gate is closed.
+              </p>
+              <button
+                id="send-probe"
+                class="button"
+                type="button"
+                aria-describedby="probe-status"
+                disabled
+              >
+                Send disposable probe
+              </button>
+              <p id="probe-status" class="control-note" aria-live="polite">
+                Connect first. Do not put required data in this probe.
+              </p>
+            </div>
 
-        const channel1resp = await fetch(
-            `${API_BASE}/sessions/${session1.id}/datachannels/new${EXTRA_QUERYPARAMS}`,
-            {
-                method: "POST",
-                headers,
-                body: JSON.stringify({
-                    dataChannels: [
-                        {
-                            location: "local",
-                            dataChannelName: "channel-one",
-                        },
-                    ],
-                }),
-            }
-        ).then((res) => res.json());
+            <div class="control-group">
+              <h4>After the ACK</h4>
+              <p>Send a new message to verify normal delivery.</p>
+              <form id="reliable-form" class="message-form" autocomplete="off">
+                <label for="reliable-message">Publisher message</label>
+                <div class="input-row">
+                  <input
+                    id="reliable-message"
+                    type="text"
+                    maxlength="500"
+                    value="fresh message sent after ACK"
+                    disabled
+                  />
+                  <button
+                    id="send-reliable"
+                    class="button primary"
+                    type="submit"
+                    disabled
+                  >
+                    Send
+                  </button>
+                </div>
+              </form>
+            </div>
 
-        const channel1 = session1.peerConnection.createDataChannel(
-            "channel-one",
-            {
-                negotiated: true,
-                id: channel1resp.dataChannels[0].id,
-            }
-        );
+            <div class="events">
+              <h4>Publisher events</h4>
+              <ol id="publisher-log" class="message-log" aria-live="polite"></ol>
+            </div>
+          </section>
 
-        const channel1SubscribeResp = await fetch(
-            `${API_BASE}/sessions/${session2.id}/datachannels/new${EXTRA_QUERYPARAMS}`,
-            {
-                method: "POST",
-                headers,
-                body: JSON.stringify({
-                    dataChannels: [
-                        {
-                            location: "remote",
-                            sessionId: session1.id,
-                            dataChannelName: "channel-one",
-                        },
-                    ],
-                }),
-            }
-        ).then((res) => res.json());
+          <section class="endpoint">
+            <header class="endpoint-header">
+              <h3>Subscriber</h3>
+              <span>receive and reply</span>
+            </header>
 
-        const channel1Subscribed =
-            session2.peerConnection.createDataChannel(
-                "channel-one-subscribed",
-                {
-                    negotiated: true,
-                    id: channel1SubscribeResp.dataChannels[0].id,
-                }
-            );
+            <div class="control-group">
+              <h4>Open the gate</h4>
+              <p>
+                The first subscriber message is consumed as the ACK and is not
+                forwarded to the publisher.
+              </p>
+              <button
+                id="send-ack"
+                class="button"
+                type="button"
+                aria-describedby="ack-deadline"
+                disabled
+              >
+                Send subscriber ACK
+              </button>
+              <p id="ack-deadline" class="control-note">
+                Send within 30 seconds of remote channel creation.
+              </p>
+            </div>
 
-        dcStartButton.style.display = "block"
+            <div class="control-group">
+              <h4>Reply with <code>canReply</code></h4>
+              <p>
+                After the fresh publisher message arrives, reply on the same
+                channel. Only this subscriber has reply access.
+              </p>
+              <form id="reply-form" class="message-form" autocomplete="off">
+                <label for="reply-message">Subscriber reply</label>
+                <div class="input-row">
+                  <input
+                    id="reply-message"
+                    type="text"
+                    maxlength="500"
+                    value="subscriber reply via canReply"
+                    disabled
+                  />
+                  <button
+                    id="send-reply"
+                    class="button primary"
+                    type="submit"
+                    disabled
+                  >
+                    Reply
+                  </button>
+                </div>
+              </form>
+            </div>
 
-        channel1Subscribed.addEventListener('message', (evt) => {
-            const received = evt.data
-            const receivedTs = evt.timeStamp
-            const sendTs = parseFloat(received)
-            dcSamples.push(receivedTs - sendTs)
-            updateStats(dcSamples, dcStats)
-        })
+            <div class="events">
+              <h4>Subscriber events</h4>
+              <ol id="subscriber-log" class="message-log" aria-live="polite"></ol>
+            </div>
+          </section>
+        </div>
+      </section>
 
-        let dcInterval
-        dcStartButton.addEventListener('click', () => {
-            if (dcStartButton.textContent.startsWith('Start')) {
-                dcSamples.length = 0;
-                dcInterval = runDc()
-                dcStartButton.textContent = dcStartButton.textContent.replace('Start', 'Stop')
-            } else {
-                clearInterval(dcInterval)
-                dcStartButton.textContent = dcStartButton.textContent.replace('Stop', 'Start')
-            }
-        })
+      <section class="panel state-panel" aria-labelledby="state-title">
+        <header class="panel-header">
+          <div>
+            <h2 id="state-title">Replaceable state</h2>
+            <p>
+              Unordered delivery with <code>maxRetransmits: 0</code>. The
+              receiver applies only the latest revision it sees.
+            </p>
+          </div>
+          <span
+            class="state-badge"
+            data-channel-state="unreliable-unordered"
+            data-state="new"
+            >new</span
+          >
+        </header>
+        <div class="state-actions">
+          <button
+            id="send-state-burst"
+            class="button"
+            type="button"
+            disabled
+          >
+            Send 8-state burst
+          </button>
+          <dl class="state-readout">
+            <div>
+              <dt>Latest revision</dt>
+              <dd id="latest-revision">-</dd>
+            </div>
+            <div>
+              <dt>Latest x</dt>
+              <dd id="latest-position">-</dd>
+            </div>
+          </dl>
+        </div>
+        <ol id="state-log" class="message-log state-log" aria-live="polite"></ol>
+      </section>
 
+      <details class="settings">
+        <summary>Exact API and browser settings</summary>
+        <p>
+          Local API, remote API, and negotiated browser channels must use
+          matching reliability settings.
+        </p>
+        <div class="settings-grid">
+          <section>
+            <h3>Reliable ordered</h3>
+            <p data-description="reliable-ordered"></p>
+            <pre data-config="reliable-ordered"></pre>
+          </section>
+          <section>
+            <h3>Unordered, no retransmissions</h3>
+            <p data-description="unreliable-unordered"></p>
+            <pre data-config="unreliable-unordered"></pre>
+          </section>
+        </div>
+      </details>
 
-        function runDc() {
-            return setInterval(() => {
-                channel1.send(performance.now())
-            }, 500)
-        }
+      <footer>
+        Teardown closes remote DataChannels before browser channels and
+        PeerConnections. Repeating teardown sends no duplicate close requests.
+      </footer>
+    </main>
 
-        function stdev(arr) {
-            let mean = arr.reduce((acc, curr) => {
-                return acc + curr
-            }, 0) / arr.length;
-            arr = arr.map((k) => {
-                return (k - mean) ** 2
-            });
-            let sum = arr.reduce((acc, curr) => acc + curr, 0);
-            let variance = sum / arr.length
-            return Math.sqrt(variance)
-        }
-
-        function updateStats(samples, elem) {
-            const min = Math.min.apply(null, samples)
-            const max = Math.max.apply(null, samples)
-            const avg = samples.reduce((a, b) => a + b) / samples.length
-            const std = stdev(samples)
-            elem.textContent = `Samples: ${samples.length}; Min: ${min.toFixed(2)}; Max: ${max.toFixed(2)}; Stdev: ${std.toFixed(2)}; Average: ${avg.toFixed(2)}`
-        }
-
-        async function createCallsSession() {
-            const sessionResponse = await fetch(
-                `${API_BASE}/sessions/new${EXTRA_QUERYPARAMS}`,
-                {
-                    method: "POST",
-                    headers,
-                },
-            ).then((res) => res.json());
-
-            return sessionResponse.sessionId;
-        }
-
-        /**
-         * Creates a peer connection with some default settings
-         */
-        async function createPeerConnection() {
-            const peerConnection = new RTCPeerConnection({
-                iceServers: [
-                    {
-                        urls: "stun:stun.cloudflare.com:3478",
-                    },
-                ],
-                bundlePolicy: "max-bundle",
-            });
-
-            return peerConnection;
-        }
-
-        async function establishDataChannelTransport(session, makeOffer) {
-            let sdp = null
-            if (makeOffer) {
-                const dc = await session.peerConnection.createDataChannel("server-events", { negotiated: false })
-                dc.onmessage = (m) => console.log(m)
-                sdp = await session.peerConnection.createOffer()
-                await session.peerConnection.setLocalDescription(sdp)
-            }
-            const response = await fetch(
-                `${API_BASE}/sessions/${session.id}/datachannels/establish${EXTRA_QUERYPARAMS}`,
-                {
-                    method: "POST",
-                    headers,
-                    body: JSON.stringify({
-                        dataChannel: {
-                            location: "remote",
-                            dataChannelName: "server-events",
-                        },
-                        ...(sdp != null ? {
-                            sessionDescription: { type: 'offer', sdp: sdp.sdp }
-                        } : {})
-                    }),
-                },
-            ).then((res) => res.json());
-            if (response.requiresImmediateRenegotiation) {
-                // We got a session description from the remote in the response,
-                // we need to set it as the remote description
-                await session.peerConnection.setRemoteDescription(
-                    response.sessionDescription,
-                );
-                // Create an answer
-                const localAnswer = await session.peerConnection.createAnswer();
-                // And set it as local description
-                await session.peerConnection.setLocalDescription(localAnswer);
-                // Send our answer back to the Calls API
-                const renegotiateResponse = await fetch(
-                    `${API_BASE}/sessions/${session.id}/renegotiate${EXTRA_QUERYPARAMS}`,
-                    {
-                        method: "PUT",
-                        headers,
-                        body: JSON.stringify({
-                            sessionDescription: {
-                                sdp: localAnswer.sdp,
-                                type: "answer",
-                            },
-                        }),
-                    },
-                ).then((res) => res.json());
-                if (renegotiateResponse.errorCode) {
-                    throw new Error(renegotiateResponse.errorDescription);
-                }
-            } else {
-                await session.peerConnection.setRemoteDescription(
-                    response.sessionDescription,
-                );
-            }
-        }
-
-    </script>
-</body>
+    <script type="module" src="/app.js"></script>
+  </body>
 </html>

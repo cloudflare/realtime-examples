@@ -1,0 +1,25 @@
+{
+  "name": "cloudflare-realtime-sfu-datachannel-example",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20.12.0"
+  },
+  "scripts": {
+    "build": "esbuild app.ts --bundle --platform=browser --format=esm --target=es2022 --outfile=dist/app.js",
+    "prestart": "npm run build",
+    "start": "tsx server.ts",
+    "pretest": "npm run build",
+    "test": "tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "scan:generated": "tsx scan-generated.ts",
+    "check": "npm run typecheck && npm test && npm run scan:generated"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.23.12",
+    "typescript": "^5.9.2"
+  }
+}

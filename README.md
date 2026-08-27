@@ -36,7 +36,7 @@ public control and cleanup operations still need application authorization.
 | Build speech applications | [`ai-tts-stt/`](ai-tts-stt/) | Speech recognition, generated audio, Workers AI, and bidirectional adapters | Experimental |
 | Broadcast generated speech | [`tts-ws/`](tts-ws/) | An external text-to-speech provider and Realtime SFU fanout | Experimental |
 | Learn media publishing | [`echo/`](echo/) | Low-level audio and video track operations | Legacy |
-| Learn DataChannels | [`echo-datachannels/`](echo-datachannels/) | DataChannel transport, publishing, and subscription | Legacy |
+| Learn DataChannel delivery | [`echo-datachannels/`](echo-datachannels/) | Reliability, `waitForAck`, `canReply`, and teardown through a server boundary | Experimental |
 | Learn simulcast | [`echo-simulcast/`](echo-simulcast/) | Multiple video layers and subscriber layer selection | Legacy |
 | Connect a WebRTC model | [`openai-webrtc-relay/`](openai-webrtc-relay/) | Browser and model PeerConnections joined through Realtime SFU | Legacy |
 | Combine Realtime SFU and TURN | [`sfu-turn-go/`](sfu-turn-go/) | Pion, TURN relay transport, and Realtime SFU DataChannels | Legacy |

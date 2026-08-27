@@ -106,26 +106,27 @@ examples:
       - It has no application authentication, authorization, or cleanup boundary.
 
   - id: echo-datachannels
-    title: DataChannel echo
+    title: Realtime SFU DataChannels
     path: echo-datachannels
     kind: example
-    summary: Publish and subscribe to a Realtime SFU DataChannel.
+    summary: Compare reliable ordered delivery and unordered zero-retransmission state through a server-side Realtime SFU boundary.
     category: datachannel-primitive
     difficulty: intermediate
     components:
       - browser
+      - Node.js server
       - Realtime SFU
-    maturity: legacy
+    maturity: experimental
     recommended_starting_point: false
     setup_time_minutes: null
     hosted_demo: null
     architecture: null
-    credential_boundary: browser
+    credential_boundary: server
     known_limitations:
-      - The Realtime SFU bearer token is placed in browser code.
-      - The example uses stale Calls terminology.
-      - It has no application authentication, authorization, or cleanup boundary.
-      - The example does not wait for connected and open states, validate API responses, or close DataChannels.
+      - Both endpoints run in one page with no room membership, discovery, or reconnection.
+      - The localhost server has no application authentication, authorization, rate limiting, or public deployment hardening.
+      - The example demonstrates one canReply subscriber and does not transfer reply access.
+      - Abrupt browser or server termination can interrupt explicit cleanup.
 
   - id: echo-simulcast
     title: Simulcast echo
