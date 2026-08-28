@@ -10,6 +10,29 @@ maturity_states:
     description: Educational or historical sample that is not a recommended architecture.
 
 examples:
+  - id: video-room
+    title: Custom video room
+    path: video-room
+    kind: blueprint
+    summary: Publish and subscribe to browser audio and video in an authorized custom room.
+    category: custom-video
+    difficulty: intermediate
+    components:
+      - browser
+      - Worker
+      - Durable Object
+      - Durable Object WebSocket
+      - Realtime SFU
+    maturity: experimental
+    recommended_starting_point: true
+    setup_time_minutes: null
+    hosted_demo: null
+    architecture: video-room/ARCHITECTURE.md
+    credential_boundary: server
+    known_limitations:
+      - Room-change delivery uses revision-only notifications with a periodic 15-second safety poll.
+      - Application rate limiting, room quotas, and Access policy provisioning are deployment responsibilities.
+
   - id: ai-tts-stt
     title: Realtime audio TTS and STT
     path: ai-tts-stt

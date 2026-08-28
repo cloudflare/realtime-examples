@@ -1,0 +1,38 @@
+{
+  "name": "cloudflare-realtime-video-room-blueprint",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build && node scripts/remove-preview-secrets.mjs",
+    "cf-typegen": "wrangler types --env-file scripts/typegen.env --strict-vars=false",
+    "check": "npm run cf-typegen -- --check && npm run typecheck && npm run test && npm run build && npm run scan:browser",
+    "deploy": "npm run build && wrangler deploy",
+    "dev": "vite dev",
+    "scan:browser": "node scripts/scan-browser.mjs",
+    "test": "npm run test:unit && npm run test:workerd",
+    "test:live": "playwright test",
+    "test:unit": "tsx --test tests/unit/*.test.ts",
+    "test:workerd": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "jose": "^6.2.10"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.54.1",
+    "@cloudflare/vitest-plugin": "^1.1.1",
+    "@msw/cloudflare": "^0.0.1",
+    "@playwright/test": "^1.62.1",
+    "@types/node": "^26.0.0",
+    "msw": "^2.15.0",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2",
+    "vitest": "^4.1.11",
+    "wrangler": "^4.127.0"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}

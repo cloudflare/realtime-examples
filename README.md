@@ -10,6 +10,22 @@ the same architecture to your product.
 
 ## Best places to start
 
+### Build a custom video room
+
+Start with [`video-room/`](video-room/). After deployment,
+open one room URL in a fresh Google Chrome tab, join, then select
+**Open another participant** for a second fresh tab in the same Chrome profile.
+Enter different names; each participant publishes camera and microphone tracks
+and receives the other participant through raw Realtime SFU sessions.
+
+Do not use Duplicate Tab because it can copy the first tab's `sessionStorage`
+identity. Separate Chrome profiles are optional only for testing distinct
+Cloudflare Access identities.
+
+The Worker holds SFU credentials and authenticates requests. A Durable Object
+owns room presence, track discovery, authorization, reconnect, and cleanup,
+with hibernating WebSockets sending revision-only change notifications.
+
 ### Process live video in a Worker
 
 Start with [`video-to-jpeg/`](video-to-jpeg/). After deployment, a browser
@@ -32,6 +48,7 @@ public control and cleanup operations still need application authorization.
 
 | Goal | Start with | What it demonstrates | Status |
 | --- | --- | --- | --- |
+| Build a custom video room | [`video-room/`](video-room/) | Authorized publishing and subscribing, Durable Object presence, reconnect, and cleanup | Experimental |
 | Process WebRTC video | [`video-to-jpeg/`](video-to-jpeg/) | Browser video, a Worker, a Durable Object, and a WebSocket media adapter | Experimental |
 | Build speech applications | [`ai-tts-stt/`](ai-tts-stt/) | Speech recognition, generated audio, Workers AI, and bidirectional adapters | Experimental |
 | Broadcast generated speech | [`tts-ws/`](tts-ws/) | An external text-to-speech provider and Realtime SFU fanout | Experimental |
@@ -54,8 +71,8 @@ deployable application, an architecture diagram, browser and server code,
 security boundaries, reconnect and cleanup behavior, troubleshooting, and
 reproducible checks.
 
-We are currently building the first application blueprints. In the meantime,
-start with the examples above.
+Start with the [custom video room](video-room/) to inspect a complete
+Worker, Durable Object, browser, and Realtime SFU application.
 
 Use a blueprint to:
 
@@ -64,9 +81,10 @@ Use a blueprint to:
 3. Inspect the Realtime SFU operations and application state.
 4. Adapt the implementation while preserving its documented boundaries.
 
-All blueprints live under [`blueprints/`](blueprints/). Existing example
-directories remain available. When a blueprint replaces an older example, the
-old directory points developers to the current implementation.
+Blueprints live alongside examples as top-level application directories.
+`catalog.yaml` and each application's `blueprint.yaml` identify the stronger
+contract without adding another navigation level. Existing example paths remain
+available; an example that grows into a blueprint can keep its current path.
 
 ## Keep credentials safe
 
@@ -96,8 +114,8 @@ application fits every production environment.
 ## For contributors and coding agents
 
 Keep the human-facing README and `catalog.yaml` consistent. Add complete
-application blueprints under `blueprints/`, preserve existing example
-directories, and keep known limitations next to the implementation.
+application blueprints as top-level directories, preserve existing example
+paths, and keep known limitations next to the implementation.
 
 Run the repository checks before submitting a change:
 

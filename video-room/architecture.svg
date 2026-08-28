@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="620" viewBox="0 0 1200 620" role="img" aria-labelledby="title desc">
+  <title id="title">Custom video room architecture</title>
+  <desc id="desc">Browsers use separate producer and consumer PeerConnections. A Worker authenticates HTTP requests and maps them to typed Durable Object RPC, while the Durable Object owns room state and hibernating WebSockets send revision-only notifications.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#15251f"/>
+    </marker>
+    <style>
+      .box{fill:#f4efdf;stroke:#15251f;stroke-width:3}
+      .trusted{fill:#d8f25b;stroke:#15251f;stroke-width:3}
+      .sfu{fill:#1746d1;stroke:#15251f;stroke-width:3}
+      .title{font:700 25px Georgia,serif;fill:#15251f}
+      .text{font:16px monospace;fill:#15251f}
+      .light{font:16px monospace;fill:#fff}
+      .line{fill:none;stroke:#15251f;stroke-width:3;marker-end:url(#arrow)}
+      .media{fill:none;stroke:#e4522f;stroke-width:5;marker-end:url(#arrow)}
+      .notify{fill:none;stroke:#1746d1;stroke-width:3;stroke-dasharray:8 6;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect width="1200" height="620" fill="#f4efdf"/>
+  <text x="50" y="48" class="title">Browser participant</text>
+  <rect x="40" y="70" width="250" height="110" rx="8" class="box"/>
+  <text x="70" y="115" class="text">explicit lobby</text>
+  <text x="70" y="145" class="text">named media tiles</text>
+  <rect x="40" y="230" width="250" height="90" rx="8" class="box"/>
+  <text x="68" y="283" class="text">producer PeerConnection</text>
+  <rect x="40" y="390" width="250" height="90" rx="8" class="box"/>
+  <text x="68" y="443" class="text">consumer PeerConnection</text>
+
+  <text x="390" y="48" class="title">Trusted Worker boundary</text>
+  <rect x="370" y="70" width="420" height="110" rx="8" class="trusted"/>
+  <text x="407" y="113" class="text">Worker: Access JWT / localhost auth</text>
+  <text x="407" y="143" class="text">same-origin HTTP to typed room RPC</text>
+  <rect x="370" y="220" width="420" height="290" rx="8" class="trusted"/>
+  <text x="407" y="260" class="text">Room Durable Object</text>
+  <text x="407" y="292" class="text">presence + member authorization</text>
+  <text x="407" y="324" class="text">track discovery + stale alarm</text>
+  <text x="407" y="348" class="text">hibernating revision notifications</text>
+  <rect x="410" y="360" width="155" height="100" rx="6" class="box"/>
+  <text x="430" y="400" class="text">producer</text>
+  <text x="430" y="430" class="text">SDP queue</text>
+  <rect x="595" y="360" width="155" height="100" rx="6" class="box"/>
+  <text x="615" y="400" class="text">consumer</text>
+  <text x="615" y="430" class="text">SDP queue</text>
+
+  <text x="905" y="48" class="title">Realtime SFU</text>
+  <rect x="885" y="220" width="270" height="110" rx="8" class="sfu"/>
+  <text x="920" y="265" class="light">producer session</text>
+  <text x="920" y="295" class="light">one SDP state machine</text>
+  <rect x="885" y="380" width="270" height="110" rx="8" class="sfu"/>
+  <text x="920" y="425" class="light">consumer session</text>
+  <text x="920" y="455" class="light">one SDP state machine</text>
+
+  <path d="M290 120 H370" class="line"/>
+  <path d="M370 150 H330 V185 H290" class="notify"/>
+  <path d="M580 180 V220" class="line"/>
+  <path d="M565 410 H885 V275" class="line"/>
+  <path d="M750 410 H885 V435" class="line"/>
+  <path d="M290 275 H885" class="media"/>
+  <path d="M885 435 H290" class="media"/>
+
+  <text x="40" y="560" class="text">Browser APIs remain HTTP; room operations use typed RPC; WebSocket upgrade uses fetch.</text>
+  <text x="40" y="590" class="text">Audio/video use the orange media path. SFU credentials never cross into browser assets or responses.</text>
+</svg>

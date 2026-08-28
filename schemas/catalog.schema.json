@@ -91,7 +91,7 @@
         },
         "path": {
           "type": "string",
-          "pattern": "^(?:blueprints/)?[a-z0-9]+(?:-[a-z0-9]+)*$"
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
         },
         "kind": {
           "enum": [
@@ -168,23 +168,6 @@
         }
       },
       "allOf": [
-        {
-          "if": {
-            "properties": {
-              "kind": {
-                "const": "blueprint"
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "path": {
-                "type": "string",
-                "pattern": "^blueprints/[a-z0-9]+(?:-[a-z0-9]+)*$"
-              }
-            }
-          }
-        },
         {
           "if": {
             "properties": {

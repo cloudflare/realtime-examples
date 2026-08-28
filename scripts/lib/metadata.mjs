@@ -5,7 +5,6 @@ import Ajv from "ajv";
 import YAML from "yaml";
 
 const INFRASTRUCTURE_DIRECTORIES = new Set([
-  "blueprints",
   "docs",
   "node_modules",
   "schemas",
@@ -27,7 +26,7 @@ function formatAjvErrors(prefix, errors = []) {
   });
 }
 
-function listTopLevelItems(repoRoot) {
+function listTopLevelDirectories(repoRoot) {
   return fs
     .readdirSync(repoRoot, { withFileTypes: true })
     .filter((entry) => {
@@ -37,10 +36,16 @@ function listTopLevelItems(repoRoot) {
       if (INFRASTRUCTURE_DIRECTORIES.has(entry.name)) {
         return false;
       }
-      return fs.existsSync(path.join(repoRoot, entry.name, "README.md"));
+      return true;
     })
     .map((entry) => entry.name)
     .sort();
+}
+
+function listTopLevelItems(repoRoot) {
+  return listTopLevelDirectories(repoRoot).filter((directory) =>
+    fs.existsSync(path.join(repoRoot, directory, "README.md")),
+  );
 }
 
 function listBlueprintMetadata(repoRoot, entries) {
@@ -53,20 +58,14 @@ function listBlueprintMetadata(repoRoot, entries) {
     });
   }
 
-  const blueprintsRoot = path.join(repoRoot, "blueprints");
-  if (fs.existsSync(blueprintsRoot)) {
-    for (const entry of fs.readdirSync(blueprintsRoot, {
-      withFileTypes: true,
-    })) {
-      const relativePath = path.posix.join("blueprints", entry.name);
-      const metadataPath = path.join(blueprintsRoot, entry.name, "blueprint.yaml");
-      if (entry.isDirectory() && fs.existsSync(metadataPath)) {
-        discovered.set(relativePath, {
-          directory: entry.name,
-          relativePath,
-          metadataPath,
-        });
-      }
+  for (const directory of listTopLevelDirectories(repoRoot)) {
+    const metadataPath = path.join(repoRoot, directory, "blueprint.yaml");
+    if (fs.existsSync(metadataPath)) {
+      discovered.set(directory, {
+        directory,
+        relativePath: directory,
+        metadataPath,
+      });
     }
   }
 
