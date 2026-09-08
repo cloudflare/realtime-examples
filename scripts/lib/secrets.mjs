@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -49,6 +50,44 @@ const LINE_ASSIGNMENT_PATTERN = new RegExp(
 );
 
 const BROWSER_SFU_MARKER = new RegExp(`\\b${SENSITIVE_NAME}\\b`, "g");
+
+function isInGitWorkTree(rootPath) {
+  let currentPath = path.resolve(rootPath);
+  while (true) {
+    if (fs.existsSync(path.join(currentPath, ".git"))) {
+      return true;
+    }
+
+    const parentPath = path.dirname(currentPath);
+    if (parentPath === currentPath) {
+      return false;
+    }
+    currentPath = parentPath;
+  }
+}
+
+function listRepositoryFiles(repoRoot) {
+  const result = spawnSync(
+    "git",
+    ["ls-files", "-co", "--exclude-standard", "-z"],
+    {
+      cwd: repoRoot,
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+    },
+  );
+
+  if (result.status === 0) {
+    return [...new Set(result.stdout.split("\0").filter(Boolean))].sort();
+  }
+
+  if (isInGitWorkTree(repoRoot)) {
+    const reason = result.error?.code ?? `exit status ${result.status}`;
+    throw new Error(`Unable to enumerate repository files with git (${reason}).`);
+  }
+
+  return walkFiles(repoRoot);
+}
 
 function isPlaceholder(value) {
   const normalized = value.trim().toLowerCase();
@@ -121,6 +160,40 @@ export function scanTextForSecrets(content, options = {}) {
   return findings;
 }
 
+function scanFiles(repoRoot, filePaths, options = {}) {
+  const findings = [];
+  for (const filePath of filePaths) {
+    const absoluteFile = path.resolve(repoRoot, filePath);
+    if (!isPathInside(repoRoot, absoluteFile)) {
+      findings.push({
+        file: filePath,
+        line: 1,
+        type: "scan path escapes repository",
+      });
+      continue;
+    }
+    if (
+      !fs.existsSync(absoluteFile) ||
+      !fs.lstatSync(absoluteFile).isFile()
+    ) {
+      continue;
+    }
+
+    const content = readTextFile(absoluteFile);
+    if (content === null) {
+      continue;
+    }
+    for (const finding of scanTextForSecrets(content, options)) {
+      findings.push({
+        file: path.relative(repoRoot, absoluteFile),
+        ...finding,
+      });
+    }
+  }
+
+  return findings;
+}
+
 function scanPaths(repoRoot, paths, options = {}) {
   const findings = [];
   for (const targetPath of paths) {
@@ -142,25 +215,18 @@ function scanPaths(repoRoot, paths, options = {}) {
       continue;
     }
 
-    for (const filePath of walkFiles(absoluteTarget)) {
-      const content = readTextFile(filePath);
-      if (content === null) {
-        continue;
-      }
-      for (const finding of scanTextForSecrets(content, options)) {
-        findings.push({
-          file: path.relative(repoRoot, filePath),
-          ...finding,
-        });
-      }
-    }
+    findings.push(
+      ...scanFiles(repoRoot, walkFiles(absoluteTarget), options),
+    );
   }
 
   return findings;
 }
 
 export function scanRepositoryForSecrets(repoRoot) {
-  return scanPaths(repoRoot, ["."], { browserAsset: false });
+  return scanFiles(repoRoot, listRepositoryFiles(repoRoot), {
+    browserAsset: false,
+  });
 }
 
 export function scanBrowserAssets(repoRoot, browserAssetPaths) {
