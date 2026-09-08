@@ -39,28 +39,22 @@ test("blueprint schema rejects missing required metadata", () => {
   );
 });
 
-test("catalog requires blueprints to live under blueprints", () => {
+test("catalog allows blueprints at top level", () => {
   const schema = JSON.parse(
     fs.readFileSync(`${repoRoot}/schemas/catalog.schema.json`, "utf8"),
   );
   const catalog = loadYaml(`${repoRoot}/catalog.yaml`);
-  catalog.examples[0].kind = "blueprint";
+  const example = catalog.examples.find((entry) => entry.kind === "example");
+  assert.ok(example, "fixture requires at least one non-blueprint example");
+  example.kind = "blueprint";
   const validate = new Ajv({ allErrors: true, strict: true }).compile(schema);
 
-  assert.equal(validate(catalog), false);
-  assert.equal(
-    validate.errors.some(
-      (error) =>
-        error.instancePath.endsWith("/path") &&
-        error.keyword === "pattern",
-    ),
-    true,
-  );
+  assert.equal(validate(catalog), true);
 });
 
 test("CI includes active experimental blueprints", () => {
   const blueprint = {
-    relativePath: "blueprints/example",
+    relativePath: "example",
     metadata: {
       id: "example",
       status: "active",
@@ -70,7 +64,7 @@ test("CI includes active experimental blueprints", () => {
   };
   const archived = {
     ...blueprint,
-    relativePath: "blueprints/archived",
+    relativePath: "archived",
     metadata: {
       ...blueprint.metadata,
       id: "archived",
@@ -81,7 +75,7 @@ test("CI includes active experimental blueprints", () => {
   assert.deepEqual(buildBlueprintMatrix([blueprint, archived]), [
     {
       id: "example",
-      path: "blueprints/example",
+      path: "example",
       node_version: "22",
     },
   ]);

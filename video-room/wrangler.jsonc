@@ -1,0 +1,29 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "realtime-video-room-blueprint",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-08-27",
+  "assets": {
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "ROOMS",
+        "class_name": "VideoRoom"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["VideoRoom"]
+    }
+  ],
+  "vars": {
+    "AUTH_MODE": "cloudflare-access",
+    "ROOM_STALE_SECONDS": "45"
+  }
+}

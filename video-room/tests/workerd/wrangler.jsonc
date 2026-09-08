@@ -1,0 +1,24 @@
+{
+  "main": "../../src/worker.ts",
+  "compatibility_date": "2026-08-27",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "ROOMS",
+        "class_name": "VideoRoom"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["VideoRoom"]
+    }
+  ],
+  "vars": {
+    "AUTH_MODE": "local",
+    "ROOM_STALE_SECONDS": "20",
+    "REALTIME_SFU_APP_ID": "<test-app-id>",
+    "REALTIME_SFU_BEARER_TOKEN": "<test-token>"
+  }
+}

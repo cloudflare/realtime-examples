@@ -1,0 +1,31 @@
+flowchart LR
+  subgraph B1["Browser participant"]
+    AUI["Lobby and named tiles"]
+    APCP["Producer PeerConnection"]
+    APCC["Consumer PeerConnection"]
+  end
+
+  subgraph CF["Trusted Cloudflare application boundary"]
+    W["Worker auth, HTTP API, and RPC mapping"]
+    DO["Room Durable Object\npresence, authorization, track discovery"]
+    WS["Hibernating notification sockets\nsingle-use ticket + revision only"]
+    PQ["Producer session queue"]
+    CQ["Consumer session queue"]
+  end
+
+  subgraph SFU["Cloudflare Realtime SFU"]
+    PS["Producer SFU session"]
+    CS["Consumer SFU session"]
+  end
+
+  AUI -->|"same-origin JSON + member capability"| W
+  W -->|"typed RPC\nfetch only for WebSocket upgrade"| DO
+  DO --> PQ
+  DO --> CQ
+  DO --> WS
+  PQ -->|"server-held SFU credential"| PS
+  CQ -->|"server-held SFU credential"| CS
+  APCP ==>|"audio + video"| PS
+  CS ==>|"remote audio + video"| APCC
+  W -.->|"authorized HTTP response"| AUI
+  WS -.->|"{type: room-changed, revision}"| AUI

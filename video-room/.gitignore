@@ -1,0 +1,4 @@
+.dev.vars
+dist/
+playwright-report/
+test-results/
