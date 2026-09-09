@@ -26,6 +26,17 @@ The Worker holds SFU credentials and authenticates requests. A Durable Object
 owns room presence, track discovery, authorization, reconnect, and cleanup,
 with hibernating WebSockets sending revision-only change notifications.
 
+### Run a game in a Container
+
+Start with [`cloud-gaming/`](cloud-gaming/). It runs Freedoom in a Cloudflare
+Container, publishes H.264 video and Opus audio through Realtime SFU, and sends
+keyboard and mouse input upstream through DataChannels.
+
+Cloudflare Access protects the deployed application. Each browser tab is a
+separate viewer, while one tab at a time may control the game. The Worker keeps
+the Realtime SFU credential, while one `GameContainer` Durable Object owns run
+state, authorization, expiry, and cleanup.
+
 ### Process live video in a Worker
 
 Start with [`video-to-jpeg/`](video-to-jpeg/). After deployment, a browser
@@ -49,6 +60,7 @@ public control and cleanup operations still need application authorization.
 | Goal | Start with | What it demonstrates | Status |
 | --- | --- | --- | --- |
 | Build a custom video room | [`video-room/`](video-room/) | Authorized publishing and subscribing, Durable Object presence, reconnect, and cleanup | Experimental |
+| Run cloud gaming | [`cloud-gaming/`](cloud-gaming/) | Container media publication, Access-authenticated viewing, one controlling tab, and DataChannel reliability | Experimental |
 | Process WebRTC video | [`video-to-jpeg/`](video-to-jpeg/) | Browser video, a Worker, a Durable Object, and a WebSocket media adapter | Experimental |
 | Build speech applications | [`ai-tts-stt/`](ai-tts-stt/) | Speech recognition, generated audio, Workers AI, and bidirectional adapters | Experimental |
 | Broadcast generated speech | [`tts-ws/`](tts-ws/) | An external text-to-speech provider and Realtime SFU fanout | Experimental |
@@ -71,8 +83,9 @@ deployable application, an architecture diagram, browser and server code,
 security boundaries, reconnect and cleanup behavior, troubleshooting, and
 reproducible checks.
 
-Start with the [custom video room](video-room/) to inspect a complete
-Worker, Durable Object, browser, and Realtime SFU application.
+Start with the [custom video room](video-room/) for browser-to-browser media, or
+the [cloud-gaming blueprint](cloud-gaming/) for Container-hosted media and
+upstream control.
 
 Use a blueprint to:
 

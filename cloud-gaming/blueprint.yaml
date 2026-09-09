@@ -1,0 +1,48 @@
+version: 1
+id: cloud-gaming
+title: Cloud gaming with Containers
+summary: Run Freedoom in a Container, deliver media through Realtime SFU, and send authorized control over DataChannels.
+maturity: experimental
+status: active
+
+topology:
+  publishers: one
+  subscribers: many
+  media:
+    - audio
+    - video
+  datachannels: true
+
+components:
+  - browser
+  - Worker
+  - Durable Object
+  - Container
+  - Rust
+  - Cloudflare Access
+  - Realtime SFU
+
+entrypoints:
+  source: https://github.com/cloudflare/realtime-examples/tree/main/cloud-gaming
+  demo: null
+  docs: null
+
+security:
+  browser_has_sfu_secret: false
+  authentication: PRODUCTION.md#authentication
+  authorization: PRODUCTION.md#authorization
+
+lifecycle:
+  reconnect: ARCHITECTURE.md#reconnect
+  cleanup: ARCHITECTURE.md#cleanup
+
+ci:
+  node_version: "22"
+  install: npm ci
+  checks:
+    - name: Check
+      run: npm run check
+  browser_asset_paths:
+    - dist/client
+
+maintainer: null

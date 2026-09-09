@@ -1,0 +1,52 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bone: #efe6d4;
+  --color-bone-deep: #ded1ba;
+  --color-charcoal: #27231f;
+  --color-charcoal-soft: #332e28;
+  --color-field-green: #79a47d;
+  --color-field-orange: #d96b32;
+  --color-field-red: #a44334;
+  --color-ink: #28231e;
+  --color-rule: #8d8171;
+  --color-screen: #171715;
+  --font-body: "Avenir Next", "Segoe UI", sans-serif;
+  --font-display: "Avenir Next Condensed", "DIN Condensed",
+    "Franklin Gothic Condensed", sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, monospace;
+  --animate-monitor-in: monitor-in 280ms ease-out both;
+}
+
+@keyframes monitor-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@layer base {
+  html {
+    min-width: 320px;
+    background: var(--color-charcoal);
+  }
+
+  body {
+    min-width: 320px;
+    min-height: 100vh;
+    margin: 0;
+    color: var(--color-ink);
+    background: var(--color-charcoal);
+    font-family: var(--font-body);
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+  }
+
+  button {
+    font: inherit;
+  }
+}
