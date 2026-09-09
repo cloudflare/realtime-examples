@@ -2,216 +2,117 @@
 
 > Example status: **Experimental**
 
-This blueprint deploys a small two-way browser video room using raw Cloudflare
-Realtime SFU HTTPS operations. Each participant publishes camera/microphone
-tracks and subscribes to every other active participant.
+Build a small browser video room with raw Cloudflare Realtime SFU operations.
+Participants publish camera and microphone tracks and receive everyone else in
+the room.
 
-It is intentionally restrained: a minimal application demonstrating public
-Realtime SFU APIs and production-minded application boundaries, not a
-conferencing product.
+## Run locally
 
-After joining, you see named local and remote video tiles, a participant count,
-a Leave button, and a creator-only room termination control. A direct URL such
-as `/rooms/design-review` identifies the room but does not authorize access.
-
-## Components
-
-- A browser uses separate producer and consumer `RTCPeerConnection` instances
-  so the two media directions and their negotiation queues are easy to inspect.
-  A single bidirectional connection is also a valid application design.
-- A Worker authenticates every public HTTP request, maps room operations to
-  typed Durable Object RPC methods, and keeps SFU credentials server-side.
-- One Durable Object per room owns presence, track discovery, membership
-  capabilities, authorization, notification tickets, reconnect state, and
-  stale cleanup.
-- A hibernating Durable Object WebSocket sends revision-only room-change
-  notifications; HTTP remains authoritative for every snapshot and mutation.
-- Cloudflare Realtime SFU forwards audio and video between browser sessions.
-
-No external conferencing SDK or application service is required. A Cloudflare
-account with Workers, Durable Objects, Realtime SFU, and Cloudflare Access is
-required for a deployed room.
-
-## Run locally with live SFU media
-
-Use Node.js 22 or newer. The Cloudflare Vite plugin reads local secrets from the
-standard ignored `.dev.vars` file. Create it with owner-only permissions, then
-remove it after validation:
+Use Node.js 22 or later:
 
 ```bash
 cd video-room
 npm ci
+cp .dev.vars.example .dev.vars
+chmod 600 .dev.vars
+```
+
+Set `REALTIME_SFU_APP_ID` and `REALTIME_SFU_BEARER_TOKEN` in `.dev.vars`, then:
+
+```bash
 npm run check
-
-export REALTIME_SFU_APP_ID='<temporary-app-id>'
-read -rsp 'temporary SFU token: ' REALTIME_SFU_BEARER_TOKEN
-export REALTIME_SFU_BEARER_TOKEN
-
-(umask 077
-  for name in REALTIME_SFU_APP_ID REALTIME_SFU_BEARER_TOKEN; do
-    printf '%s=' "${name}"
-    printenv "${name}"
-  done > .dev.vars
-)
-unset REALTIME_SFU_BEARER_TOKEN
-
 npm run dev
 ```
 
-`npm run dev` starts Vite on port `8787` and reloads browser code, HTML, and CSS
-as they change.
+Open `http://localhost:8787/rooms/two-browser-check`, join, and select
+**Open another participant**. Join from the new tab with a different name. Both
+tabs should show local and remote audio and video.
 
-Open `http://localhost:8787/rooms/two-browser-check` in Google Chrome and join
-as the first participant. Select **Open another participant** beside
-**Copy link**, then join with another name in the fresh tab. Both tabs in the
-same Chrome profile should show two named tiles with the other participant's
-audio and video.
+Do not use Chrome's **Duplicate Tab** action. It can copy `sessionStorage` and
+reuse the first participant's browser identity.
 
-Do not use Chrome's **Duplicate Tab** action: duplicated tabs can inherit
-`sessionStorage` and reuse the first participant's client identity. Separate
-Chrome profiles are optional only when testing distinct Cloudflare Access
-identities.
+## How it works
 
-This blueprint is the canonical Realtime example for composing one Durable
-Object per room with WebSocket Hibernation. The Durable Object owns room state
-and coordination; `acceptWebSocket()`, bounded participant attachments, and
-`getWebSockets()` provide revision notifications only. HTTP remains
-authoritative for snapshots, SDP, authorization, mutations, and cleanup.
+![Video room architecture](architecture.svg)
 
-The browser-facing API remains HTTP. After authentication, the Worker obtains a
-named Durable Object stub and calls typed RPC methods for ordinary room
-operations. Expected outcomes return as plain tagged success or error values,
-which the Worker maps back to HTTP. Only the notification WebSocket upgrade uses
-`fetch()` on the Durable Object stub.
+Each browser uses separate producer and consumer PeerConnections. A single
+bidirectional connection is also valid when publish and subscribe operations
+share one serialized offer/answer lifecycle.
 
-After joining, each browser obtains a 30-second, single-use notification ticket
-from an authenticated HTTP endpoint. The ticket is sent in the WebSocket
-handshake, never in the URL: the browser offers the fixed notification protocol
-and a `ticket.<value>` `Sec-WebSocket-Protocol` token, while the server selects
-only the fixed protocol. Socket open and `room-changed` notifications
-immediately resync the existing HTTP snapshot/subscription path. A periodic
-15-second HTTP poll provides a separate convergence check.
+The Worker authenticates HTTP requests and calls one Durable Object per room.
+The Durable Object owns membership, authorization, track discovery, reconnect,
+and cleanup. Media flows directly between the browser and Realtime SFU, while
+SFU credentials remain in server-side bindings.
 
-Before join, the browser creates a random member capability and reuses it for
-identical retries; the Durable Object stores only its hash. Reconnect requests
-carry an idempotency ID, and every SDP mutation carries the media generation it
-was created for. Transient reconnect, publish, or subscribe setup failures are
-retried up to three times before heartbeat, notifications, and safety polling
-resume for continued recovery.
+A hibernating WebSocket sends only `room-changed` revisions. HTTP remains
+authoritative for snapshots, SDP, and mutations, with a 15-second safety poll.
 
-`npm run dev` explicitly overrides authentication to `local`. The checked-in
-and deployed default is `cloudflare-access`; missing `AUTH_MODE` also fails
-closed. The browser sends a development identity only on `localhost`, and a
-deployed host explicitly forced to local mode still rejects every API request.
+The initial join sends a browser-generated member capability in its JSON body.
+Later requests use the `x-room-member-token` header. Notification tickets are
+short-lived, single-use, and sent through `Sec-WebSocket-Protocol`, never a URL.
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the complete signaling and lifecycle
+design.
 
 ## Deploy
 
-1. Put the Worker hostname behind a Cloudflare Access application.
-2. Export the Access team domain, Access application audience, temporary SFU
-   application ID, and temporary SFU bearer token in your shell.
-3. Deploy the code and then add the bearer token as a Worker secret:
+A deployed room requires Workers, Durable Objects, Realtime SFU, and a
+Cloudflare Access application protecting the Worker hostname.
 
 ```bash
 export CF_ACCESS_TEAM_DOMAIN='<team-name>.cloudflareaccess.com'
 export CF_ACCESS_AUD='<access-application-audience>'
-export REALTIME_SFU_APP_ID='<temporary-app-id>'
-read -rsp 'temporary SFU token: ' REALTIME_SFU_BEARER_TOKEN
-export REALTIME_SFU_BEARER_TOKEN
 
 npm run deploy -- \
+  --secrets-file .dev.vars \
   --var "CF_ACCESS_TEAM_DOMAIN:${CF_ACCESS_TEAM_DOMAIN}" \
-  --var "CF_ACCESS_AUD:${CF_ACCESS_AUD}" \
-  --var "REALTIME_SFU_APP_ID:${REALTIME_SFU_APP_ID}"
-
-printf %s "${REALTIME_SFU_BEARER_TOKEN}" |
-  npx wrangler secret put REALTIME_SFU_BEARER_TOKEN
+  --var "CF_ACCESS_AUD:${CF_ACCESS_AUD}"
 ```
 
-Open the deployed `/rooms/two-browser-check` URL in one Google Chrome tab,
-join, then select **Open another participant** for the second fresh tab. Both
-tabs can share one Access identity while keeping separate participant
-identities in fresh `sessionStorage`. Use separate profiles only when the test
-specifically requires distinct Access identities. Do not use Duplicate Tab.
+Open `/rooms/two-browser-check` on the protected hostname and repeat the
+two-tab flow. Validate Access manually in Chrome; the local browser test does
+not test Access policy, cookies, or JWT delivery.
 
-## Validate two endpoints
+See [PRODUCTION.md](PRODUCTION.md) before changing authentication,
+authorization, quotas, retention, or observability.
 
-`npm run check` combines two test layers:
+## Verify
 
-- `npm run test:unit` runs deterministic application state, queue, validation,
-  and browser-controller tests.
-- `npm run test:workerd` runs Worker and Durable Object integration tests for
-  typed RPC, bindings, persisted state, alarms, eviction, and hibernating
-  WebSockets.
+```bash
+npm run check
+```
 
-The check also verifies that the generated `worker-configuration.d.ts` matches
-`wrangler.jsonc` and the exported Worker classes. Run `npm run cf-typegen` after
-changing either boundary.
-
-The opt-in Playwright test uses two fresh pages in one Google Chrome browser
-context, fake camera devices, the local Vite Worker, and the real SFU path. It
-clicks **Open another participant** and verifies that the second page receives
-fresh `sessionStorage`. It contains no SFU credentials:
+The optional live test uses two fresh Chrome pages and the real SFU path:
 
 ```bash
 LIVE_VIDEO_ROOM_URL='http://localhost:8787' npm run test:live
 ```
 
-Validate an Access-protected deployment manually. Sign in through Access in
-Google Chrome, then run the same primary flow in two fresh tabs within that
-authenticated profile. Separate profiles are optional distinct-identity
-coverage, not the normal room journey. Playwright does not validate the Access
-login, policy, cookie, or JWT delivery.
+Also verify refresh, Leave and rejoin, creator termination, and audible remote
+audio. See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for failures.
 
-The test proves named local/remote tiles, remote audio and video tracks,
-refresh/rejoin without duplicate presence, revision-notification convergence,
-leave/rejoin, peer-visible room termination, and local cleanup in both
-browsers. Confirming that remote audio is actually audible remains a manual
-Chrome check. In Chrome DevTools, the notification socket URL must contain no
-token/ticket query parameter and server frames must contain only
-`room-changed` plus `revision`.
+## Clean up
 
-Task validation uses Google Chrome. Other supported browsers remain useful
-follow-up coverage.
-
-## Stop and clean up
-
-Stop local development with `Ctrl-C`. For a deployed validation Worker:
+Use **Leave** for one participant or **Terminate room** for the complete room.
+Failures remain visible so cleanup can be retried.
 
 ```bash
+npx wrangler delete
 rm -f .dev.vars
-npx wrangler delete --name realtime-video-room-blueprint --force
-unset REALTIME_SFU_APP_ID REALTIME_SFU_BEARER_TOKEN
 unset CF_ACCESS_TEAM_DOMAIN CF_ACCESS_AUD
 ```
 
-The Leave button closes published and subscribed tracks. Browser media,
-membership tokens, and room controls are cleared only after the API confirms
-cleanup; a failure remains visible and retryable. Abandoned participants stop
-appearing after 45 seconds after the Durable Object alarm successfully
-force-closes their known SFU track mids. A transient forced-close failure keeps
-presence active and schedules another alarm attempt. Cleanup seals new media
-mutations, drains active operations, and closes all recorded mids before
-presence changes. Repeated close responses that identify a track as already
-absent are accepted; other per-track errors preserve state for retry. Cleanup
-operations are idempotent within the five-minute membership tombstone window.
-
-## Documentation
-
-- [Architecture and lifecycle](ARCHITECTURE.md)
-- [Production integration](PRODUCTION.md)
-- [Troubleshooting](TROUBLESHOOTING.md)
-- [Coding-agent invariants](AGENTS.md)
+Remove the Access application separately.
 
 ## Known limitations
 
-- This is an experimental reference, not a hosted service or production
-  certification.
-- Room-change delivery uses a notification-only hibernating WebSocket with a
-  periodic 15-second safety poll; it is not a second signaling protocol.
 - A closed or crashed tab may remain visible for up to 45 seconds.
-- Camera/microphone replacement reconnects both media sessions instead of
-  reusing a transceiver.
+- Camera or microphone replacement reconnects both media sessions.
+- Recovery after repeated reconnect setup failures may require a page reload.
+- Audible speaker output remains a manual check.
 - Simulcast, screen sharing, chat, recording, end-to-end encryption,
-  moderation, and advanced layouts are intentionally unavailable.
-- Application rate limiting, room quotas, audit storage, and Access policy
-  creation remain deployment responsibilities.
+  moderation, device switching, and advanced layouts are not implemented.
+- Rate limiting, room quotas, audit storage, and Access policy creation remain
+  deployment responsibilities.
+
+Coding agents should also read [AGENTS.md](AGENTS.md).

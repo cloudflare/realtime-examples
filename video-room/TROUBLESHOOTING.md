@@ -59,7 +59,8 @@ Tickets expire after 30 seconds and can be consumed once. The browser should
 request a fresh ticket and retry with bounded backoff. Confirm the ticket is in
 the offered `ticket.<value>` `Sec-WebSocket-Protocol` token, not the URL, and
 that the server selects only the fixed notification protocol. The member token
-is sent only to the authenticated `/socket-ticket` HTTP endpoint.
+used for notification setup is sent to the authenticated `/socket-ticket` HTTP
+endpoint.
 
 ## A mutation reports negotiation timed out
 
