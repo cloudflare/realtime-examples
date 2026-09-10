@@ -29,7 +29,7 @@ Authentication and room authorization are separate:
 
 | Operation | Policy |
 | --- | --- |
-| Join | Any authenticated application principal may create/join a valid room name. |
+| Join | Any authenticated application principal may create/join a valid room name and supplies a browser-generated member token in the validated JSON body. |
 | Snapshot and heartbeat | The principal must present its random room member token. |
 | Notification ticket | The principal and member token must match an active participant; the returned ticket expires after 30 seconds and is single-use. |
 | Notification socket | The browser offers the fixed protocol plus a `ticket.<value>` `Sec-WebSocket-Protocol` token; the upgrade consumes the ticket and selects only the fixed protocol. No member token or ticket is accepted from the URL. |
@@ -40,6 +40,8 @@ Authentication and room authorization are separate:
 
 Only a SHA-256 member-token hash is stored. Do not replace the token check with
 room names, participant IDs, track names, SFU session IDs, or URLs.
+After the initial join, the browser sends the member token in the
+`x-room-member-token` header.
 The browser-generated capability, reconnect request ID, and explicit media
 generation make identical lifecycle retries idempotent and fence late SDP
 mutations from replacement sessions.

@@ -1,31 +1,51 @@
-flowchart LR
-  subgraph B1["Browser participant"]
-    AUI["Lobby and named tiles"]
-    APCP["Producer PeerConnection"]
-    APCC["Consumer PeerConnection"]
+---
+config:
+  theme: base
+  themeVariables:
+    actorBkg: "#fffaf0"
+    actorBorder: "#22241f"
+    actorTextColor: "#22241f"
+    lineColor: "#22241f"
+    noteBkgColor: "#f2eddf"
+    noteBorderColor: "#8a8174"
+    noteTextColor: "#22241f"
+    signalColor: "#22241f"
+    signalTextColor: "#22241f"
+  sequence:
+    actorMargin: 42
+    boxMargin: 12
+    messageMargin: 32
+    mirrorActors: false
+    noteMargin: 12
+    useMaxWidth: true
+---
+sequenceDiagram
+  accTitle: Custom video room architecture
+  accDescr: A browser uses separate producer and consumer PeerConnections. A Worker authenticates HTTP requests and calls a room Durable Object, which owns application state and uses server credentials to manage two Realtime SFU sessions. A hibernating WebSocket sends revision-only notifications.
+
+  participant Browser as Browser participant
+  box rgb(251, 227, 207) Trusted application boundary
+    participant Worker as Worker
+    participant Room as Room Durable Object
+  end
+  box rgb(224, 235, 255) Realtime SFU
+    participant Publish as Producer session
+    participant Subscribe as Consumer session
   end
 
-  subgraph CF["Trusted Cloudflare application boundary"]
-    W["Worker auth, HTTP API, and RPC mapping"]
-    DO["Room Durable Object\npresence, authorization, track discovery"]
-    WS["Hibernating notification sockets\nsingle-use ticket + revision only"]
-    PQ["Producer session queue"]
-    CQ["Consumer session queue"]
-  end
+  Note over Browser,Room: Access identity + member capability<br/>HTTP owns snapshots, SDP, and mutations
+  Browser->>Worker: Authenticated HTTP request
+  Worker->>Room: Typed RPC
+  Room-->>Worker: Tagged result
+  Worker-->>Browser: Authorized JSON + SDP
 
-  subgraph SFU["Cloudflare Realtime SFU"]
-    PS["Producer SFU session"]
-    CS["Consumer SFU session"]
-  end
+  Note over Browser,Subscribe: Separate producer and consumer PeerConnections<br/>Separate per-session SDP queues
+  Room->>Publish: SFU API with server credential
+  Browser->>Publish: Publish audio + video
+  Room->>Subscribe: SFU API with server credential
+  Subscribe-->>Browser: Remote audio + video
 
-  AUI -->|"same-origin JSON + member capability"| W
-  W -->|"typed RPC\nfetch only for WebSocket upgrade"| DO
-  DO --> PQ
-  DO --> CQ
-  DO --> WS
-  PQ -->|"server-held SFU credential"| PS
-  CQ -->|"server-held SFU credential"| CS
-  APCP ==>|"audio + video"| PS
-  CS ==>|"remote audio + video"| APCC
-  W -.->|"authorized HTTP response"| AUI
-  WS -.->|"{type: room-changed, revision}"| AUI
+  Browser->>Worker: WebSocket upgrade + single-use ticket
+  Worker->>Room: fetch() for upgrade only
+  Room-->>Browser: room-changed revision
+  Note over Browser,Room: Notification triggers an authorized HTTP snapshot

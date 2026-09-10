@@ -2,7 +2,12 @@
 
 ![Video room architecture](architecture.svg)
 
-The editable diagram source is [architecture.mmd](architecture.mmd).
+The editable diagram source is [architecture.mmd](architecture.mmd). Regenerate
+the SVG with:
+
+```sh
+npm run diagram
+```
 
 This is the canonical Realtime composition for one Durable Object per room plus
 WebSocket Hibernation. The Durable Object owns state and coordination, uses
@@ -29,10 +34,11 @@ stored in the Durable Object.
 Room names, participant IDs, SFU session IDs, track names, mids, and URLs are
 locators rather than authorization.
 
-The member token is sent only in authenticated HTTP headers. An authenticated
-HTTP endpoint exchanges it for a random 30-second, single-use WebSocket ticket
-tied to that participant. The ticket is consumed from
-`Sec-WebSocket-Protocol`, not a URL.
+The initial join sends the browser-generated member token in its validated JSON
+body. Later authorized HTTP requests send it in the
+`x-room-member-token` header. An authenticated endpoint exchanges it for a
+random 30-second, single-use WebSocket ticket tied to that participant. The
+ticket is consumed from `Sec-WebSocket-Protocol`, not a URL.
 
 ## Media direction
 
