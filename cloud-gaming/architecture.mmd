@@ -1,0 +1,47 @@
+---
+config:
+  theme: base
+  themeVariables:
+    actorBkg: "#fffaf0"
+    actorBorder: "#22241f"
+    actorTextColor: "#22241f"
+    lineColor: "#22241f"
+    noteBkgColor: "#f2eddf"
+    noteBorderColor: "#8a8174"
+    noteTextColor: "#22241f"
+    signalColor: "#22241f"
+    signalTextColor: "#22241f"
+  sequence:
+    actorMargin: 40
+    boxMargin: 12
+    messageMargin: 38
+    mirrorActors: false
+    noteMargin: 12
+    useMaxWidth: true
+---
+sequenceDiagram
+  accTitle: Cloud gaming with Realtime SFU
+  accDescr: An authenticated browser uses a Worker and GameContainer Durable Object for application state. A Container publishes media through Realtime SFU, and one controlling browser sends input replies through two DataChannels.
+
+  participant Browser as Browser tab
+  box rgb(251, 227, 207) Application boundary
+    participant Worker as Worker
+    participant Game as Game state
+  end
+  participant SFU as Realtime SFU
+  participant Container as Container publisher
+
+  Note over Browser,Game: Access identity + per-tab capability<br/>One SFU session and PeerConnection per browser tab
+  Browser->>Worker: App request
+  Worker->>Game: Typed RPC
+  Game->>Container: Start or stop
+  Container->>Game: Register publisher
+  Game->>SFU: Create SFU resources
+
+  Container->>SFU: Publish H.264 + Opus
+  Container->>SFU: Publish two input channels
+  SFU-->>Browser: Subscribe to media + channels
+  Game->>SFU: Enable controller replies
+  Browser->>SFU: Reliable keyboard + buttons
+  Browser->>SFU: Replaceable pointer movement
+  SFU-->>Container: Forward controller input

@@ -1,0 +1,10 @@
+*
+!Dockerfile
+!.dockerignore
+!THIRD_PARTY_NOTICES.md
+!publisher/
+!publisher/Cargo.toml
+!publisher/Cargo.lock
+!publisher/src/
+!publisher/src/**
+publisher/target/

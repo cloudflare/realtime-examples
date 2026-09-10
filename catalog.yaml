@@ -33,6 +33,32 @@ examples:
       - Room-change delivery uses revision-only notifications with a periodic 15-second safety poll.
       - Application rate limiting, room quotas, and Access policy provisioning are deployment responsibilities.
 
+  - id: cloud-gaming
+    title: Cloud gaming with Containers
+    path: cloud-gaming
+    kind: blueprint
+    summary: Run Freedoom in a Container, deliver media through Realtime SFU, and send authorized control over DataChannels.
+    category: cloud-gaming
+    difficulty: advanced
+    components:
+      - browser
+      - Worker
+      - Durable Object
+      - Container
+      - Rust
+      - Cloudflare Access
+      - Realtime SFU
+    maturity: experimental
+    recommended_starting_point: true
+    setup_time_minutes: null
+    hosted_demo: null
+    architecture: cloud-gaming/ARCHITECTURE.md
+    credential_boundary: server
+    known_limitations:
+      - The blueprint runs one fixed Freedoom slot and supports one active controller.
+      - Control requires a desktop browser with keyboard and pointer-lock support.
+      - Access policy provisioning, admission limits, and rate limiting are deployment responsibilities.
+
   - id: ai-tts-stt
     title: Realtime audio TTS and STT
     path: ai-tts-stt

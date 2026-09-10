@@ -1,0 +1,27 @@
+{
+  "name": "realtime-cloud-gaming-workerd-tests",
+  "main": "../src/worker.ts",
+  "compatibility_date": "2026-09-02",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "GAME_CONTAINER",
+        "class_name": "GameContainer",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["GameContainer"],
+    },
+  ],
+  "vars": {
+    "AUTH_MODE": "cloudflare-access",
+    "CF_ACCESS_AUD": "<test-audience>",
+    "CF_ACCESS_TEAM_DOMAIN": "example.cloudflareaccess.com",
+    "REALTIME_SFU_APP_ID": "<test-app-id>",
+    "REALTIME_SFU_BEARER_TOKEN": "<test-token>",
+  },
+}

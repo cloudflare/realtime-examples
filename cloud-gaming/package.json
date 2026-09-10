@@ -1,0 +1,42 @@
+{
+  "name": "cloudflare-realtime-cloud-gaming-blueprint",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build && node scripts/remove-preview-secrets.mjs",
+    "cf-typegen": "wrangler types --env-file scripts/typegen.env --strict-vars=false",
+    "check": "npm run cf-typegen -- --check && npm run typecheck && npm run test && npm run build && npm run scan:browser",
+    "deploy": "npm run build && wrangler deploy",
+    "dev": "vite dev",
+    "diagram": "npx --yes @mermaid-js/mermaid-cli@11.12.0 --input architecture.mmd --output architecture.svg --backgroundColor transparent",
+    "scan:browser": "node scripts/scan-browser.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cloudflare/containers": "0.3.7",
+    "hono": "^4.12.31",
+    "jose": "^6.2.10",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.54.1",
+    "@cloudflare/vitest-plugin": "^1.1.1",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^26.0.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "@vitejs/plugin-react": "^6.1.1",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2",
+    "vitest": "^4.1.11",
+    "wrangler": "4.127.0"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}

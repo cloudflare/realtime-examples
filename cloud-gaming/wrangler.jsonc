@@ -1,0 +1,50 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "realtime-cloud-gaming",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-09-02",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"],
+  },
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true,
+      "persist": true,
+    },
+  },
+  "containers": [
+    {
+      "name": "realtime-cloud-gaming",
+      "class_name": "GameContainer",
+      "image": "./Dockerfile",
+      "max_instances": 1,
+      "instance_type": "standard-2",
+    },
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "GAME_CONTAINER",
+        "class_name": "GameContainer",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["GameContainer"],
+    },
+  ],
+  "vars": {
+    "AUTH_MODE": "cloudflare-access",
+  },
+  "secrets": {
+    "required": ["REALTIME_SFU_APP_ID", "REALTIME_SFU_BEARER_TOKEN"],
+  },
+  "preview_urls": false,
+}
