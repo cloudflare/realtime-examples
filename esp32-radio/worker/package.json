@@ -1,0 +1,46 @@
+{
+  "name": "esp32-sfu-exhibit",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "types": "wrangler types",
+    "check": "npm run types && npm run typecheck && npm test && npm run format:check",
+    "test": "node --import ./dev/register-aliases.mjs --test src/client/radio/*.test.ts src/shared/contracts/*.test.ts src/server/*.test.ts dev/*.test.ts",
+    "dry-run": "wrangler deploy --dry-run",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc -p tsconfig.app.json && tsc -p tsconfig.node.json && tsc -p tsconfig.worker.json && tsc -p tsconfig.test.json && tsc -p tsconfig.runtime-test.json",
+    "test:worker": "vitest run",
+    "test:worker:watch": "vitest",
+    "test:bundle": "node --import ./dev/register-aliases.mjs --test tests/bundle.test.mjs"
+  },
+  "dependencies": {
+    "@floating-ui/react": "0.27.20",
+    "@fontsource/ibm-plex-mono": "5.3.0",
+    "@fontsource/ibm-plex-sans": "5.3.0",
+    "hono": "4.13.7",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "zod": "4.6.4"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "1.54.8",
+    "@cloudflare/vitest-plugin": "1.1.8",
+    "@tailwindcss/vite": "4.3.3",
+    "@types/node": "24.13.4",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.1",
+    "miniflare": "5.20260911.0-alpha",
+    "playwright-core": "1.63.0",
+    "prettier": "3.9.6",
+    "tailwindcss": "4.3.3",
+    "typescript": "7.0.2",
+    "vite": "8.3.0",
+    "vitest": "4.1.11",
+    "wrangler": "4.131.1"
+  }
+}

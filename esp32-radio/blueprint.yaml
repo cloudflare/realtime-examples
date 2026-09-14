@@ -1,0 +1,50 @@
+version: 1
+id: esp32-radio
+title: Pocket Radio with ESP32-S3
+summary: Follow embedded firmware through SFU negotiation, Opus publication, and authorized DataChannels using a working ESP32-S3 radio.
+maturity: experimental
+status: active
+topology:
+  publishers: one
+  subscribers: few
+  media:
+    - audio
+  datachannels: true
+components:
+  - browser
+  - Worker
+  - Durable Object
+  - ESP32-S3
+  - Rust
+  - ESP-IDF
+  - Realtime SFU
+entrypoints:
+  source: https://github.com/cloudflare/realtime-examples/tree/main/esp32-radio
+  demo: null
+  docs: null
+security:
+  browser_has_sfu_secret: false
+  authentication: ARCHITECTURE.md#authentication
+  authorization: ARCHITECTURE.md#authorization
+lifecycle:
+  reconnect: ARCHITECTURE.md#reconnect
+  cleanup: PRODUCTION.md#stop-and-clean-up
+ci:
+  node_version: "24"
+  install: |
+    set -eu
+    rustup toolchain install 1.88.0 --profile minimal --component rustfmt,clippy
+    make setup-c-format
+    npm ci --ignore-scripts --prefix worker
+  checks:
+    - name: Formatting, portable Rust, web, and host tools
+      run: make check CARGO='cargo +1.88.0'
+    - name: Vendored transport library and packet tests
+      run: make check-transport-patches CARGO='cargo +1.88.0'
+    - name: Worker and Durable Object lifecycle
+      run: make test-worker
+    - name: Browser and Worker build, bundle, and scheduled alarm
+      run: make test-worker-bundle
+  browser_asset_paths:
+    - worker/dist/client
+maintainer: null

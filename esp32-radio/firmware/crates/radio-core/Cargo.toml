@@ -1,0 +1,15 @@
+[package]
+name = "radio-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Portable playback and wire contracts for the S3 SFU radio"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+crc32fast.workspace = true
+
+[lints]
+workspace = true

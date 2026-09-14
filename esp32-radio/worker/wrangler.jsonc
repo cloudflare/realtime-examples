@@ -1,0 +1,21 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "esp32-radio",
+  "main": "src/server/index.ts",
+  "compatibility_date": "2026-09-12",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [{ "pattern": "radio.example.com", "custom_domain": true }],
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "invocation_logs": false, "head_sampling_rate": 1 },
+  },
+  "assets": { "binding": "ASSETS", "run_worker_first": ["/api/*"] },
+  "durable_objects": { "bindings": [{ "name": "ROBOTS", "class_name": "RobotRoom" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RobotRoom"] }],
+  "vars": { "ROBOT_NAME": "pocket-radio" },
+  "secrets": {
+    "required": ["REALTIME_APP_ID", "REALTIME_APP_TOKEN", "DEVICE_TOKEN", "VIEWER_PASSWORD"],
+  },
+  // Production secrets: REALTIME_APP_ID, REALTIME_APP_TOKEN, DEVICE_TOKEN, VIEWER_PASSWORD.
+}

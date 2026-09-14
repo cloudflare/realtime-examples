@@ -1,0 +1,31 @@
+digraph PocketRadio {
+  graph [rankdir=LR, bgcolor="white", pad=0.35, nodesep=0.7, ranksep=0.85,
+         fontname="Arial", label="Embedded WebRTC with Realtime SFU", labelloc=t, fontsize=22];
+  node [shape=box, style="rounded,filled", fillcolor="#f8fafc", color="#94a3b8",
+        fontname="Arial", fontsize=13, margin="0.2,0.16"];
+  edge [fontname="Arial", fontsize=11, arrowsize=0.8, penwidth=1.5];
+
+  firmware [label="Device firmware\nESP32-S3 + Rust / str0m\nOne peer and UDP socket\nOpus source + application channels", fillcolor="#fff7ed", color="#ea580c"];
+  sfu [label="Realtime SFU\nOne session per endpoint\nAudio and DataChannels", fillcolor="#fff7ed", color="#ea580c"];
+  listeners [label="Browser listeners\nOne peer per tab\nPlay audio, show data\nOne authorized controller", fillcolor="#eff6ff", color="#2563eb"];
+
+  subgraph cluster_backend {
+    label="Trusted application backend (this example)";
+    fontname="Arial";
+    fontsize=13;
+    color="#cbd5e1";
+    style=rounded;
+    worker [label="Worker\nDevice / viewer authentication\nSFU credentials"];
+    room [label="RobotRoom Durable Object\nSession state + discovery\nController lease + cleanup"];
+    worker -> room [label="RPC", color="#64748b", style=dashed];
+  }
+
+  firmware -> sfu [label="Opus audio\nrobot + spectrum", color="#ea580c", fontcolor="#9a3412"];
+  sfu -> listeners [label="Audio + data", color="#ea580c", fontcolor="#9a3412"];
+  listeners -> sfu [label="robot replies\ncontroller only", color="#2563eb", fontcolor="#1d4ed8", constraint=false];
+  sfu -> firmware [label="Commands", color="#2563eb", fontcolor="#1d4ed8", constraint=false];
+
+  firmware -> worker [label="HTTPS signaling\noffer, answer, IDs, liveness", color="#64748b", fontcolor="#475569", style=dashed, dir=both, constraint=false];
+  listeners -> worker [label="HTTPS signaling\njoin, SDP, control lease", color="#64748b", fontcolor="#475569", style=dashed, dir=both, constraint=false];
+  room -> sfu [label="SFU HTTPS API\nsessions, tracks, channels", color="#64748b", fontcolor="#475569", style=dashed, constraint=false];
+}
