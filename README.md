@@ -10,6 +10,19 @@ the same architecture to your product.
 
 ## Best places to start
 
+### Connect an embedded device
+
+Start with [`esp32-radio/`](esp32-radio/). Follow the
+[firmware-to-SFU walkthrough](esp32-radio/firmware/docs/sfu.md) through peer
+ownership, SDP exchange, Opus audio, and DataChannel negotiation. It identifies
+the platform and signaling boundaries to adapt for your device.
+
+Pocket Radio is the working ESP32-S3 implementation: browsers listen to a shared
+playlist, display telemetry, and control playback and the board's RGB LED.
+The Worker keeps SFU credentials; a Durable Object owns authentication and the
+controller lease. This experimental blueprint targets the ESP32-S3-DevKitC-1
+N32R16V and requires outbound UDP. Listeners reconnect after a board restart.
+
 ### Build a custom video room
 
 Start with [`video-room/`](video-room/). After deployment,
@@ -59,6 +72,7 @@ public control and cleanup operations still need application authorization.
 
 | Goal | Start with | What it demonstrates | Status |
 | --- | --- | --- | --- |
+| Connect an embedded device | [`esp32-radio/`](esp32-radio/) | Firmware peer ownership, SFU negotiation, audio and DataChannels, with server-side credentials | Experimental |
 | Build a custom video room | [`video-room/`](video-room/) | Authorized publishing and subscribing, Durable Object presence, reconnect, and cleanup | Experimental |
 | Run cloud gaming | [`cloud-gaming/`](cloud-gaming/) | Container media publication, Access-authenticated viewing, one controlling tab, and DataChannel reliability | Experimental |
 | Process WebRTC video | [`video-to-jpeg/`](video-to-jpeg/) | Browser video, a Worker, a Durable Object, and a WebSocket media adapter | Experimental |
@@ -83,8 +97,9 @@ deployable application, an architecture diagram, browser and server code,
 security boundaries, reconnect and cleanup behavior, troubleshooting, and
 reproducible checks.
 
-Start with the [custom video room](video-room/) for browser-to-browser media, or
-the [cloud-gaming blueprint](cloud-gaming/) for Container-hosted media and
+Start with [Pocket Radio](esp32-radio/) for embedded firmware and device
+control, the [custom video room](video-room/) for browser-to-browser media,
+or the [cloud-gaming blueprint](cloud-gaming/) for Container-hosted media and
 upstream control.
 
 Use a blueprint to:

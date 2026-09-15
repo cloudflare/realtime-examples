@@ -111,3 +111,25 @@ test("repository scanner falls back for a non-git directory", () => {
 
   assert.equal(hasFindingFor(findings, "local-notes.txt"), true);
 });
+
+test("radio SFU credentials are detected in source and browser assets", () => {
+  const repoRoot = createGitRepository();
+  const tokenName = "REALTIME_APP_TOKEN";
+  fs.writeFileSync(
+    path.join(repoRoot, "config.env"),
+    `${tokenName}="not-a-real-secret-value-1234567890"`,
+  );
+  const assetDirectory = path.join(repoRoot, "dist");
+  fs.mkdirSync(assetDirectory);
+  fs.writeFileSync(path.join(repoRoot, ".gitignore"), "dist/\n");
+  fs.writeFileSync(
+    path.join(assetDirectory, "client.js"),
+    `const token = env.${tokenName};`,
+  );
+
+  assert.equal(hasFindingFor(scanRepositoryForSecrets(repoRoot), "config.env"), true);
+  assert.equal(
+    hasFindingFor(scanBrowserAssets(repoRoot, ["dist"]), path.join("dist", "client.js")),
+    true,
+  );
+});

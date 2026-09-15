@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.wrangler/
+.dev.vars*
+worker-configuration.d.ts
+public/
+package-lock.json

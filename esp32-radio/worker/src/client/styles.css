@@ -1,0 +1,116 @@
+@import 'tailwindcss';
+@import '@fontsource/ibm-plex-sans/400.css';
+@import '@fontsource/ibm-plex-sans/500.css';
+@import '@fontsource/ibm-plex-mono/400.css';
+
+@theme {
+  --font-sans: 'IBM Plex Sans', 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace;
+  --color-paper: oklch(96.4% 0.009 100);
+  --color-ink: oklch(28% 0.025 156);
+  --color-ink-hover: oklch(39% 0.045 155);
+  --color-muted: oklch(49% 0.018 154);
+  --color-line: oklch(83% 0.014 133);
+  --color-panel: oklch(94.2% 0.012 112);
+  --color-surface: oklch(97.5% 0.008 106);
+  --color-leaf: oklch(98.5% 0.006 106);
+  --color-core: oklch(91.5% 0.018 133);
+  --color-audio: oklch(50% 0.112 246);
+  --color-spectrum: oklch(49% 0.085 168);
+  --color-robot: oklch(51% 0.119 44);
+  --color-error: oklch(46% 0.15 30);
+  --color-cloud: oklch(95% 0.033 76);
+  --color-cloud-hover: oklch(92.5% 0.056 76);
+  --color-cloud-line: oklch(77% 0.06 66);
+  --color-cloud-pale: oklch(97% 0.018 86);
+  --color-cloud-ink: oklch(62% 0.156 51);
+  --color-cloud-dark: oklch(45% 0.082 52);
+}
+
+@layer base {
+  body {
+    @apply min-w-80 bg-paper font-sans text-ink antialiased;
+  }
+  button {
+    @apply cursor-pointer disabled:cursor-not-allowed disabled:opacity-45 aria-disabled:cursor-not-allowed aria-disabled:opacity-45;
+  }
+  button,
+  a,
+  input {
+    @apply focus-visible:outline-3 focus-visible:outline-offset-4 focus-visible:outline-audio;
+  }
+  button svg {
+    @apply size-[18px] shrink-0;
+  }
+}
+
+/* SVG board markings and signal transport animation are drawing primitives. */
+.pcb-brand {
+  font: 10px var(--font-sans);
+  fill: #334a3c;
+  letter-spacing: 1px;
+}
+.pcb-chip {
+  font: 500 17px var(--font-sans);
+  fill: #2b4234;
+}
+.pcb-model {
+  font: 7px var(--font-mono);
+  fill: #506557;
+}
+.pcb-label {
+  font: 7px var(--font-mono);
+  fill: #c0d1b8;
+}
+.led-lit {
+  filter: drop-shadow(0 0 5px var(--led-color));
+}
+.wires {
+  @apply pointer-events-none absolute inset-0 z-0 size-full overflow-visible;
+}
+.wire path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.25px;
+}
+.wire-audio {
+  color: var(--color-audio);
+}
+.wire-spectrum {
+  color: var(--color-spectrum);
+}
+.wire-robot {
+  color: var(--color-robot);
+}
+.wire-wifi {
+  color: var(--color-muted);
+}
+.wire-track {
+  opacity: 0.4;
+}
+.wire-dim {
+  opacity: 0.22;
+}
+.wire .wire-flow {
+  stroke-dasharray: 5 22;
+  stroke-width: 2px;
+  animation: signal-travel 2s linear infinite;
+}
+.wire .wire-return {
+  animation-direction: reverse;
+  stroke-dasharray: 7 12;
+}
+@keyframes signal-travel {
+  to {
+    stroke-dashoffset: -108;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
