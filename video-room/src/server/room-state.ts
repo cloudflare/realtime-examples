@@ -1,7 +1,5 @@
 import type { TrackReference } from "../shared/protocol";
-import { RequestError } from "./auth";
 
-export const MUTATION_ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{7,95}$/;
 export type RoomPhase = "open" | "terminated" | "terminating";
 
 export type SessionState = {
@@ -83,22 +81,4 @@ export function publicTrack(track: TrackReference): TrackReference {
     kind: track.kind,
     participantId: track.participantId,
   };
-}
-
-export function objectBody(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new RequestError(400, "body_invalid", "Send a JSON object.");
-  }
-  return value as Record<string, unknown>;
-}
-
-export function boundedString(
-  value: unknown,
-  name: string,
-  pattern: RegExp,
-): string {
-  if (typeof value !== "string" || !pattern.test(value)) {
-    throw new RequestError(400, "input_invalid", `${name} is invalid.`);
-  }
-  return value;
 }

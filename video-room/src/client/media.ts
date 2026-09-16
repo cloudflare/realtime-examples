@@ -15,7 +15,8 @@ export class MediaSessions {
   private readonly abortController = new AbortController();
   private readonly consumer = createPeerConnection();
   private readonly consumerQueue = new SerialMutationQueue(retryDecision);
-  private readonly disconnectedTimers = new Set<
+  private readonly disconnectedTimers = new Map<
+    RTCPeerConnection,
     ReturnType<typeof setTimeout>
   >();
   private readonly producer = createPeerConnection();
@@ -37,19 +38,22 @@ export class MediaSessions {
       if (reference) this.onRemoteTrack(reference, event.track);
     });
     for (const peer of [this.producer, this.consumer]) {
-      let disconnectedTimer: ReturnType<typeof setTimeout> | undefined;
       peer.addEventListener("connectionstatechange", () => {
         if (this.closed) return;
         if (peer.connectionState === "failed") onConnectionLost();
+        const disconnectedTimer = this.disconnectedTimers.get(peer);
         if (peer.connectionState === "disconnected") {
-          disconnectedTimer ??= setTimeout(() => {
-            if (!this.closed) onConnectionLost();
-          }, 5_000);
-          this.disconnectedTimers.add(disconnectedTimer);
-        } else if (disconnectedTimer) {
+          if (disconnectedTimer === undefined) {
+            this.disconnectedTimers.set(
+              peer,
+              setTimeout(() => {
+                if (!this.closed) onConnectionLost();
+              }, 5_000),
+            );
+          }
+        } else if (disconnectedTimer !== undefined) {
           clearTimeout(disconnectedTimer);
-          this.disconnectedTimers.delete(disconnectedTimer);
-          disconnectedTimer = undefined;
+          this.disconnectedTimers.delete(peer);
         }
       });
     }
@@ -67,8 +71,8 @@ export class MediaSessions {
       | Awaited<ReturnType<RoomApi["publish"]>>
       | undefined;
     await this.producerQueue.enqueue(async () => {
-      await waitForStable(this.producer);
       if (!prepared) {
+        await waitForStable(this.producer);
         const transceivers = this.localStream.getTracks().map((track) =>
           this.producer.addTransceiver(track, { direction: "sendonly" }),
         );
@@ -122,9 +126,6 @@ export class MediaSessions {
         });
       }
       if (!response.requiresImmediateRenegotiation) return;
-      if (!response.sessionDescription) {
-        throw new Error("The subscription offer is missing.");
-      }
       if (!answer) {
         await this.consumer.setRemoteDescription(response.sessionDescription);
         const localAnswer = await this.consumer.createAnswer();
@@ -155,7 +156,7 @@ export class MediaSessions {
     this.abortController.abort(
       new DOMException("The media session was closed.", "AbortError"),
     );
-    for (const timer of this.disconnectedTimers) clearTimeout(timer);
+    for (const timer of this.disconnectedTimers.values()) clearTimeout(timer);
     this.disconnectedTimers.clear();
     this.producer.close();
     this.consumer.close();

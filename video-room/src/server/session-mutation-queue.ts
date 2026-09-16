@@ -24,7 +24,6 @@ type QueueItem = {
 type BlockedMutation = {
   completing?: Promise<void>;
   id: string;
-  invalidated?: boolean;
   timeout: ReturnType<typeof setTimeout>;
   waitForAnswer: (answer: unknown) => Promise<void>;
 };
@@ -131,7 +130,7 @@ export class SessionMutationQueue {
       await blocked.completing;
       this.releaseBlocked(blocked, true);
     } catch (error) {
-      if (blocked.invalidated) {
+      if (this.invalid) {
         this.releaseBlocked(blocked, false);
       } else if (this.blocked === blocked) {
         blocked.completing = undefined;
@@ -145,8 +144,8 @@ export class SessionMutationQueue {
     waitForAnswer: (answer: Answer) => Promise<void>,
     remainingMs = this.answerTimeoutMs,
   ): void {
-    if (this.blocked || this.active || this.waiting.length > 0) {
-      throw new Error("Cannot restore a negotiation while the queue is active.");
+    if (this.invalid || this.blocked || this.active || this.waiting.length > 0) {
+      throw new Error("Cannot restore a negotiation on an active or invalid queue.");
     }
     this.mutationLedger.delete(id);
     this.blocked = this.createBlock(
@@ -165,7 +164,6 @@ export class SessionMutationQueue {
     this.invalid = error;
     if (this.blocked) {
       clearTimeout(this.blocked.timeout);
-      this.blocked.invalidated = true;
       if (!this.blocked.completing) {
         this.mutationLedger.delete(this.blocked.id);
         this.blocked = undefined;
@@ -253,9 +251,9 @@ export class SessionMutationQueue {
   ): void {
     if (this.blocked !== blocked) return;
     clearTimeout(blocked.timeout);
-    if (completed && !blocked.invalidated) {
+    if (completed && !this.invalid) {
       this.rememberCompletedAnswer(blocked.id);
-    } else if (blocked.invalidated) {
+    } else if (this.invalid) {
       this.mutationLedger.delete(blocked.id);
     }
     this.blocked = undefined;

@@ -1,7 +1,16 @@
+import type { z } from "zod";
+
 import {
   API_HEADER_LOCAL_IDENTITY,
   API_HEADER_MEMBER_TOKEN,
-  type ApiErrorBody,
+  apiErrorBodySchema,
+  joinResponseSchema,
+  okResponseSchema,
+  publishResponseSchema,
+  roomSnapshotSchema,
+  socketTicketResponseSchema,
+  subscriptionResponseSchema,
+  type PublishRequest,
   type JoinResponse,
   type PublishResponse,
   type RoomSnapshot,
@@ -41,7 +50,7 @@ export class RoomApi {
     memberToken: string,
     signal?: AbortSignal,
   ): Promise<JoinResponse> {
-    const response = await this.request<JoinResponse>("join", {
+    const response = await this.request("join", joinResponseSchema, {
       body: { clientId, displayName, memberToken },
       method: "POST",
       signal,
@@ -57,7 +66,7 @@ export class RoomApi {
     requestId: string,
     signal?: AbortSignal,
   ): Promise<JoinResponse> {
-    const response = await this.request<JoinResponse>("reconnect", {
+    const response = await this.request("reconnect", joinResponseSchema, {
       body: { clientId, displayName, requestId },
       method: "POST",
       signal,
@@ -67,15 +76,24 @@ export class RoomApi {
   }
 
   snapshot(signal?: AbortSignal): Promise<RoomSnapshot> {
-    return this.request("snapshot", { method: "GET", signal });
+    return this.request("snapshot", roomSnapshotSchema, {
+      method: "GET",
+      signal,
+    });
   }
 
   heartbeat(signal?: AbortSignal): Promise<RoomSnapshot> {
-    return this.request("heartbeat", { method: "POST", signal });
+    return this.request("heartbeat", roomSnapshotSchema, {
+      method: "POST",
+      signal,
+    });
   }
 
   issueSocketTicket(signal?: AbortSignal): Promise<SocketTicketResponse> {
-    return this.request("socket-ticket", { method: "POST", signal });
+    return this.request("socket-ticket", socketTicketResponseSchema, {
+      method: "POST",
+      signal,
+    });
   }
 
   notificationSocketUrl(): string {
@@ -85,15 +103,10 @@ export class RoomApi {
   }
 
   publish(
-    input: {
-      generation: number;
-      mutationId: string;
-      sessionDescription: SessionDescription;
-      tracks: Array<{ kind: "audio" | "video"; mid: string }>;
-    },
+    input: PublishRequest,
     signal?: AbortSignal,
   ): Promise<PublishResponse> {
-    return this.request("publish", {
+    return this.request("publish", publishResponseSchema, {
       body: input,
       method: "POST",
       signal,
@@ -106,7 +119,7 @@ export class RoomApi {
     trackKeys: string[],
     signal?: AbortSignal,
   ): Promise<SubscriptionResponse> {
-    return this.request("subscribe", {
+    return this.request("subscribe", subscriptionResponseSchema, {
       body: { generation, mutationId, trackKeys },
       method: "POST",
       signal,
@@ -119,7 +132,7 @@ export class RoomApi {
     sessionDescription: SessionDescription,
     signal?: AbortSignal,
   ): Promise<{ ok: true }> {
-    return this.request("renegotiate", {
+    return this.request("renegotiate", okResponseSchema, {
       body: { generation, mutationId, sessionDescription },
       method: "POST",
       signal,
@@ -127,7 +140,7 @@ export class RoomApi {
   }
 
   leave(signal?: AbortSignal): Promise<RoomSnapshot> {
-    return this.request("leave", {
+    return this.request("leave", roomSnapshotSchema, {
       method: "POST",
       signal,
       timeoutMs: CLIENT_CLEANUP_REQUEST_TIMEOUT_MS,
@@ -135,15 +148,16 @@ export class RoomApi {
   }
 
   terminate(signal?: AbortSignal): Promise<RoomSnapshot> {
-    return this.request("terminate", {
+    return this.request("terminate", roomSnapshotSchema, {
       method: "POST",
       signal,
       timeoutMs: CLIENT_CLEANUP_REQUEST_TIMEOUT_MS,
     });
   }
 
-  private async request<Response>(
+  private async request<S extends z.ZodType>(
     action: string,
+    schema: S,
     options: {
       body?: unknown;
       method: "GET" | "POST";
@@ -151,7 +165,7 @@ export class RoomApi {
       timeoutMs?: number;
       withToken?: boolean;
     },
-  ): Promise<Response> {
+  ): Promise<z.output<S>> {
     const bounded = boundedRequestSignal(
       options.signal,
       options.timeoutMs ?? this.requestTimeoutMs,
@@ -163,18 +177,37 @@ export class RoomApi {
         method: options.method,
         signal: bounded.signal,
       });
-      const payload = (await response.json()) as Response | ApiErrorBody;
+      const headerRequestId = response.headers.get("x-request-id") ?? undefined;
+      const invalidResponse = () =>
+        new ApiError(
+          response.ok ? "response_invalid" : `http_${response.status}`,
+          "The room returned an invalid response.",
+          false,
+          headerRequestId,
+          response.status,
+        );
+      let payload: unknown;
+      try {
+        payload = await response.json();
+      } catch (error) {
+        if (bounded.signal.aborted) throw error;
+        throw invalidResponse();
+      }
       if (!response.ok) {
-        const error = (payload as ApiErrorBody).error;
+        const parsed = apiErrorBodySchema.safeParse(payload);
+        if (!parsed.success) throw invalidResponse();
+        const { error } = parsed.data;
         throw new ApiError(
-          error?.code ?? `http_${response.status}`,
-          error?.message ?? "The room request failed.",
-          error?.retryable === true,
-          error?.requestId ?? response.headers.get("x-request-id") ?? undefined,
+          error.code,
+          error.message,
+          error.retryable === true,
+          error.requestId ?? headerRequestId,
           response.status,
         );
       }
-      return payload as Response;
+      const parsed = schema.safeParse(payload);
+      if (!parsed.success) throw invalidResponse();
+      return parsed.data;
     } catch (error) {
       if (bounded.didTimeout() && !options.signal?.aborted) {
         throw new ApiError(

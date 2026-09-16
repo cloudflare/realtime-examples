@@ -589,6 +589,35 @@ test("explicit leave cannot be undone by reconnect", async () => {
   assert.equal(coordinator.snapshot().participants.length, 0);
 });
 
+test("termination rejects a reconnect whose session creation is still pending", async () => {
+  const { coordinator, room, sfu } = harness();
+  const joined = await coordinator.join(alice, {
+    clientId: "client-alice",
+    displayName: "Alice",
+    memberToken: ALICE_MEMBER_TOKEN,
+  });
+  const gate = deferred<void>();
+  sfu.createSessionBarriers.push(gate.promise, gate.promise);
+  const reconnecting = coordinator.reconnect(alice, joined.memberToken, {
+    clientId: "client-alice",
+    displayName: "Alice",
+    requestId: "reconnect-delayed-session-creation",
+  });
+  const rejected = assert.rejects(reconnecting, (error: unknown) =>
+    error instanceof RequestError && error.code === "room_terminating");
+  await waitFor(() => sfu.sessions === 4);
+  const terminating = coordinator.terminate(alice, joined.memberToken);
+  await waitFor(() => room.phase === "terminating");
+  gate.resolve();
+  await rejected;
+  const result = await terminating;
+
+  assert.equal(result.terminated, true);
+  assert.deepEqual(result.participants, []);
+  assert.equal(room.participants[joined.participantId]?.producer.generation,
+    joined.generation);
+});
+
 test("heartbeat queued first prevents stale expiry", async () => {
   let now = 1_000;
   const { coordinator, persistBarriers, room } = harness({

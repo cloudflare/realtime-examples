@@ -132,9 +132,10 @@ so they can observe terminal state and clean up locally.
 Notification socket close is not a leave signal. Browser/network socket
 lifecycle is independent from presence; heartbeat expiry remains authoritative.
 
-Every Realtime SFU HTTP request has a ten-second timeout. Keep retry budgets
-bounded above that timeout rather than allowing an external request to hold a
-Durable Object operation indefinitely.
+The SFU client waits up to ten seconds for response headers; response-body
+reading is outside that timer. For production, bound the whole operation,
+including response decoding, so upstream stalls cannot hold a room queue
+indefinitely.
 
 Classify SFU transport failures from the actual HTTP response: network errors,
 timeouts, HTTP 429, and HTTP 5xx may be retried, while ordinary HTTP 4xx should

@@ -18,15 +18,24 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "jose": "^6.2.10"
+    "hono": "^4.13.8",
+    "jose": "^6.2.10",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.54.1",
     "@cloudflare/vitest-plugin": "^1.1.1",
     "@msw/cloudflare": "^0.0.1",
     "@playwright/test": "^1.62.1",
+    "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^26.0.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
     "msw": "^2.15.0",
+    "tailwindcss": "^4.3.3",
     "tsx": "^4.23.12",
     "typescript": "^7.0.2",
     "vite": "^8.2.2",

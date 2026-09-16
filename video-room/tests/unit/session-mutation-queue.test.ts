@@ -7,6 +7,7 @@ import {
   SessionMutationQueue,
   SessionQueueError,
 } from "../../src/server/session-mutation-queue";
+import { deferred } from "./room-harness";
 
 test("keeps add, close, and reconnect serialized through renegotiation", async () => {
   const queue = new SessionMutationQueue(1_000);
@@ -167,6 +168,35 @@ test("restored blocked state deduplicates answers until ledger eviction", async 
   );
 });
 
+test("invalidation drains a completing answer without caching its success", async () => {
+  const queue = new SessionMutationQueue(1_000);
+  const gate = deferred<void>();
+  let calls = 0;
+  queue.restoreBlocked("restored-offer", async () => {
+    calls += 1;
+    await gate.promise;
+  });
+  const completing = Promise.all([
+    queue.complete("restored-offer", "answer"),
+    queue.complete("restored-offer", "answer"),
+  ]);
+  let idle = false;
+  const drained = queue.onIdle().then(() => { idle = true; });
+
+  queue.invalidate();
+  await Promise.resolve();
+  assert.equal(idle, false);
+  gate.resolve();
+  await completing;
+  await drained;
+
+  assert.equal(calls, 1);
+  assert.equal(idle, true);
+  await assert.rejects(queue.complete("restored-offer", "late-answer"),
+    (error: unknown) => error instanceof SessionQueueError &&
+      error.code === "negotiation_not_pending");
+});
+
 test("browser queue retains retryable work and preserves FIFO order", async () => {
   const events: string[] = [];
   let attempts = 0;
@@ -178,15 +208,13 @@ test("browser queue retains retryable work and preserves FIFO order", async () =
     attempts += 1;
     events.push(`first:${attempts}`);
     if (attempts < 3) throw new Error("signaling unstable");
-    return "ok";
   });
   const second = queue.enqueue(async () => {
     events.push("second");
-    return "done";
   });
 
-  assert.equal(await first, "ok");
-  assert.equal(await second, "done");
+  await first;
+  await second;
   assert.deepEqual(events, ["first:1", "first:2", "first:3", "second"]);
 });
 

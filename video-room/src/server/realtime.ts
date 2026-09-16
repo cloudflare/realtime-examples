@@ -1,35 +1,51 @@
-import type { SessionDescription } from "../shared/protocol";
+import { z } from "zod";
+import {
+  sessionDescriptionSchema,
+  type SessionDescription,
+} from "../shared/protocol";
 
 export type RealtimeEnv = {
   REALTIME_SFU_APP_ID?: string;
   REALTIME_SFU_BEARER_TOKEN?: string;
 };
 
-export type SfuTrack = {
-  errorCode?: string;
-  errorDescription?: string;
-  mid: string;
-  sessionId?: string;
-  trackName?: string;
-};
+const responseObjectSchema = z.looseObject({});
+const sessionResponseSchema = z.looseObject({ sessionId: z.string().min(1) });
+const trackMidSchema = z.object({ mid: z.string().min(1) });
+const trackSchema = z.looseObject({
+  errorCode: z.string().optional(),
+  errorDescription: z.string().optional(),
+  mid: z.string().min(1).optional(),
+  sessionId: z.string().optional(),
+  trackName: z.string().optional(),
+});
+const tracksResponseSchema = z.looseObject({
+  errorCode: z.string().optional(),
+  errorDescription: z.string().optional(),
+  requiresImmediateRenegotiation: z.boolean().optional(),
+  sessionDescription: sessionDescriptionSchema.optional(),
+  tracks: z.array(trackSchema).optional(),
+});
+const closeResponseSchema = z.looseObject({
+  requiresImmediateRenegotiation: z.boolean().optional(),
+  tracks: z.array(responseObjectSchema).optional(),
+});
 
-export type SfuTracksResponse = {
-  errorCode?: string;
-  errorDescription?: string;
-  requiresImmediateRenegotiation?: boolean;
-  sessionDescription?: SessionDescription;
-  tracks?: SfuTrack[];
-};
+// Track operations return the raw object so allocated mids can be retained
+// before malformed or failed items are rejected by parseSfuTracksResponse.
+export type SfuResponse = z.infer<typeof responseObjectSchema>;
+export type SfuTrack = z.infer<typeof trackSchema>;
+export type SfuTracksResponse = z.infer<typeof tracksResponseSchema>;
 
 export interface SfuClient {
   addTracks(
     sessionId: string,
     body: Record<string, unknown>,
-  ): Promise<SfuTracksResponse>;
+  ): Promise<SfuResponse>;
   closeTracks(
     sessionId: string,
     mids: string[],
-  ): Promise<SfuTracksResponse>;
+  ): Promise<SfuResponse>;
   createSession(): Promise<string>;
   renegotiate(
     sessionId: string,
@@ -135,24 +151,26 @@ export class RealtimeSfuClient implements SfuClient {
   }
 
   async createSession(): Promise<string> {
-    const response = await this.request<{ sessionId?: string }>(
+    const response = await this.request(
       "/sessions/new",
       "POST",
     );
-    if (!response.sessionId) {
+    assertSfuResponse(response);
+    const parsed = sessionResponseSchema.safeParse(response);
+    if (!parsed.success) {
       throw new SfuRequestError(
         "sfu_session_invalid",
         "Realtime SFU did not return a session identifier.",
         502,
       );
     }
-    return response.sessionId;
+    return parsed.data.sessionId;
   }
 
   addTracks(
     sessionId: string,
     body: Record<string, unknown>,
-  ): Promise<SfuTracksResponse> {
+  ): Promise<SfuResponse> {
     return this.request(
       `/sessions/${encodeURIComponent(sessionId)}/tracks/new`,
       "POST",
@@ -163,7 +181,7 @@ export class RealtimeSfuClient implements SfuClient {
   closeTracks(
     sessionId: string,
     mids: string[],
-  ): Promise<SfuTracksResponse> {
+  ): Promise<SfuResponse> {
     if (mids.length === 0) {
       return Promise.resolve({ tracks: [] });
     }
@@ -181,18 +199,19 @@ export class RealtimeSfuClient implements SfuClient {
     sessionId: string,
     answer: SessionDescription,
   ): Promise<void> {
-    await this.request(
+    const response = await this.request(
       `/sessions/${encodeURIComponent(sessionId)}/renegotiate`,
       "PUT",
       { sessionDescription: answer },
     );
+    assertSfuResponse(response);
   }
 
-  private async request<Payload>(
+  private async request(
     path: string,
     method: "POST" | "PUT",
     body?: Record<string, unknown>,
-  ): Promise<Payload> {
+  ): Promise<SfuResponse> {
     let response: globalThis.Response;
     const controller = new AbortController();
     const timeout = setTimeout(
@@ -244,13 +263,71 @@ export class RealtimeSfuClient implements SfuClient {
       );
     }
 
-    if (hasSfuError(payload)) {
+    return payload;
+  }
+}
+
+export function sfuTrackMids(response: SfuResponse): string[] {
+  if (!Array.isArray(response.tracks)) return [];
+  return response.tracks.flatMap((value) => {
+    const parsed = trackMidSchema.safeParse(value);
+    return parsed.success ? [parsed.data.mid] : [];
+  });
+}
+
+export function parseSfuTracksResponse(
+  response: SfuResponse,
+  operation: "publish" | "subscribe",
+): SfuTracksResponse {
+  assertTrackErrors(response, operation);
+  const parsed = tracksResponseSchema.safeParse(response);
+  if (!parsed.success) {
+    throw new SfuRequestError(
+      "sfu_response_invalid",
+      `Realtime SFU returned an invalid ${operation} response. Reconnect and retry.`,
+    );
+  }
+  return parsed.data;
+}
+
+export function parseSfuCloseResponse(response: SfuResponse) {
+  assertTrackErrors(response, "close");
+  const parsed = closeResponseSchema.safeParse(response);
+  if (!parsed.success) {
+    throw new SfuRequestError(
+      "sfu_response_invalid",
+      "Realtime SFU returned an invalid close response. Retry cleanup.",
+    );
+  }
+  return parsed.data;
+}
+
+function assertTrackErrors(
+  response: SfuResponse,
+  operation: "publish" | "subscribe" | "close",
+): void {
+  assertSfuResponse(response);
+  if (Array.isArray(response.tracks)) {
+    for (const value of response.tracks) {
+      const item = responseObjectSchema.safeParse(value);
+      if (!item.success || !hasSfuError(item.data)) continue;
+      if (operation === "close" && item.data.errorCode === "close_track_error") {
+        continue;
+      }
       throw sfuResponseError(
-        payload,
-        "Realtime SFU could not complete the operation.",
+        item.data,
+        `Realtime SFU ${operation} failed for a track. Retry with the request ID.`,
       );
     }
-    return payload as Payload;
+  }
+}
+
+function assertSfuResponse(response: SfuResponse): void {
+  if (hasSfuError(response)) {
+    throw sfuResponseError(
+      response,
+      "Realtime SFU could not complete the operation.",
+    );
   }
 }
 
@@ -297,9 +374,8 @@ async function responseObject(
 ): Promise<Record<string, unknown> | undefined> {
   try {
     const value = await response.json();
-    return value && typeof value === "object" && !Array.isArray(value)
-      ? (value as Record<string, unknown>)
-      : undefined;
+    const parsed = responseObjectSchema.safeParse(value);
+    return parsed.success ? parsed.data : undefined;
   } catch {
     return undefined;
   }

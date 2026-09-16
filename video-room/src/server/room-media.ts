@@ -1,24 +1,23 @@
 import {
-  type MediaKind,
+  type PublishRequest,
   type PublishResponse,
+  type RenegotiateRequest,
   type SessionDescription,
+  type SubscribeRequest,
   type SubscriptionResponse,
-  isMediaKind,
-  isSessionDescription,
 } from "../shared/protocol";
 import { RequestError } from "./auth";
 import {
-  hasSfuError,
+  parseSfuCloseResponse,
+  parseSfuTracksResponse,
   SfuRequestError,
+  sfuTrackMids,
   type SfuClient,
+  type SfuResponse,
   type SfuTrack,
   type SfuTracksResponse,
-  sfuResponseError,
 } from "./realtime";
 import {
-  MUTATION_ID,
-  boundedString,
-  objectBody,
   publicTrack,
   type Participant,
   type PersistedRoom,
@@ -30,9 +29,6 @@ import {
   SessionMutationQueue,
   SessionQueueError,
 } from "./session-mutation-queue";
-
-const TRACK_KEY = /^p_[a-zA-Z0-9]+:(?:audio|video)$/;
-const MID = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,63}$/;
 
 type QueueKind = "consumer" | "producer";
 
@@ -56,51 +52,13 @@ export class RoomMedia {
 
   async publish(
     participant: Participant,
-    input: unknown,
+    { generation, mutationId, sessionDescription, tracks }: PublishRequest,
   ): Promise<PublishResponse> {
-    const body = objectBody(input);
-    const mutationId = boundedString(
-      body.mutationId,
-      "mutationId",
-      MUTATION_ID,
-    );
-    const generation = boundedGeneration(body.generation);
     const fence = this.captureSessionFence(
       participant,
       "producer",
       generation,
     );
-    if (!isSessionDescription(body.sessionDescription, "offer")) {
-      throw new RequestError(
-        400,
-        "offer_invalid",
-        "Publishing requires a valid SDP offer.",
-      );
-    }
-    const tracks = arrayBody(body.tracks, "tracks");
-    if (tracks.length < 1 || tracks.length > 2) {
-      throw new RequestError(
-        400,
-        "publish_tracks_invalid",
-        "Publish one audio track, one video track, or both.",
-      );
-    }
-    const seenKinds = new Set<MediaKind>();
-    const requested = tracks.map((value) => {
-      const track = objectBody(value);
-      if (!isMediaKind(track.kind) || seenKinds.has(track.kind)) {
-        throw new RequestError(
-          400,
-          "publish_tracks_invalid",
-          "Publish at most one track of each media kind.",
-        );
-      }
-      seenKinds.add(track.kind);
-      return {
-        kind: track.kind,
-        mid: boundedString(track.mid, "mid", MID),
-      };
-    });
     const queue = this.queueFor(participant, "producer");
     return queue.enqueue(mutationId, async () => {
       this.assertRoomOpen();
@@ -112,38 +70,31 @@ export class RoomMedia {
           "This media generation already published tracks. Reconnect before replacing them.",
         );
       }
-      const names = requested.map(({ kind, mid }) => ({
+      const names = tracks.map(({ kind, mid }) => ({
         key: `${participant.id}:${kind}`,
         kind,
         mid,
         trackName: `${participant.id}-${fence.session.generation}-${kind}`,
       }));
-      const response = await this.sfu.addTracks(fence.session.id, {
-        sessionDescription: body.sessionDescription,
+      const rawResponse = await this.sfu.addTracks(fence.session.id, {
+        sessionDescription,
         tracks: names.map(({ mid, trackName }) => ({
           location: "local",
           mid,
           trackName,
         })),
       });
-      const midsChanged = this.recordMids(
+      const response = await this.acceptAddedTracks(
         fence.session,
+        queue,
+        rawResponse,
+        "publish",
         names.map((track) => track.mid),
-        response,
       );
-      const itemError = trackItemError(response, "publish");
-      if (itemError) {
-        fence.session.invalid = true;
-        queue.invalidate();
-        await this.persist(this.room);
-        throw itemError;
-      }
-      if (midsChanged) await this.persist(this.room);
-      assertTrackResponse(response, "publish");
-      await this.ensureSessionFence(participant, fence);
+      this.assertSessionFence(participant, fence);
       if (
         response.requiresImmediateRenegotiation ||
-        !isSessionDescription(response.sessionDescription, "answer")
+        response.sessionDescription?.type !== "answer"
       ) {
         fence.session.invalid = true;
         await this.persist(this.room);
@@ -183,25 +134,14 @@ export class RoomMedia {
 
   async subscribe(
     participant: Participant,
-    input: unknown,
+    { generation, mutationId, trackKeys }: SubscribeRequest,
   ): Promise<SubscriptionResponse> {
-    const body = objectBody(input);
-    const mutationId = boundedString(
-      body.mutationId,
-      "mutationId",
-      MUTATION_ID,
-    );
-    const generation = boundedGeneration(body.generation);
     const fence = this.captureSessionFence(
       participant,
       "consumer",
       generation,
     );
-    const desiredKeys = new Set(
-      arrayBody(body.trackKeys, "trackKeys").map((value) =>
-        boundedString(value, "track key", TRACK_KEY),
-      ),
-    );
+    const desiredKeys = new Set(trackKeys);
     const queue = this.queueFor(participant, "consumer");
     return queue.enqueue(mutationId, async () => {
       this.assertRoomOpen();
@@ -254,24 +194,20 @@ export class RoomMedia {
       }
 
       this.assertPublicationTargetsCurrent(add);
-      const response = await this.sfu.addTracks(fence.session.id, {
+      const rawResponse = await this.sfu.addTracks(fence.session.id, {
         tracks: add.map((track) => ({
           location: "remote",
           sessionId: track.producerSessionId,
           trackName: track.trackName,
         })),
       });
-      const midsChanged = this.recordMids(fence.session, [], response);
-      const itemError = trackItemError(response, "subscribe");
-      if (itemError) {
-        fence.session.invalid = true;
-        queue.invalidate();
-        await this.persist(this.room);
-        throw itemError;
-      }
-      if (midsChanged) await this.persist(this.room);
-      assertTrackResponse(response, "subscribe");
-      await this.ensureSessionFence(participant, fence);
+      const response = await this.acceptAddedTracks(
+        fence.session,
+        queue,
+        rawResponse,
+        "subscribe",
+      );
+      this.assertSessionFence(participant, fence);
       await this.ensurePublicationTargetsCurrent(fence, add);
       const responseTracks = indexTracks(response.tracks);
       for (const track of add) {
@@ -293,19 +229,13 @@ export class RoomMedia {
       }
       participant.lastSeenAt = this.now();
 
-      const immediate = response.requiresImmediateRenegotiation === true;
-      if (
-        immediate &&
-        !isSessionDescription(response.sessionDescription, "offer")
-      ) {
-        throw new RequestError(
-          502,
-          "subscribe_offer_missing",
-          "Realtime SFU required renegotiation without returning an SDP offer.",
-          true,
-        );
-      }
-      if (immediate) {
+      const result = subscriptionResponse(
+        mutationId,
+        participant.subscriptions,
+        response.sessionDescription,
+        response.requiresImmediateRenegotiation === true,
+      );
+      if (result.requiresImmediateRenegotiation) {
         fence.session.pendingNegotiation = {
           expiresAt: this.now() + 15_000,
           mutationId,
@@ -313,29 +243,9 @@ export class RoomMedia {
       }
       await this.changed();
       return {
-        response: subscriptionResponse(
-          mutationId,
-          participant.subscriptions,
-          response.sessionDescription,
-          immediate,
-        ),
-        waitForAnswer: immediate
-          ? async (answer: SessionDescription) => {
-              if (!isSessionDescription(answer, "answer")) {
-                throw new RequestError(
-                  400,
-                  "answer_invalid",
-                  "Renegotiation requires a valid SDP answer.",
-                );
-              }
-              this.assertSessionFence(participant, fence);
-              await this.sfu.renegotiate(fence.session.id, answer);
-              this.assertSessionFence(participant, fence);
-              fence.session.pendingNegotiation = undefined;
-              fence.session.invalid = false;
-              participant.lastSeenAt = this.now();
-              await this.persist(this.room);
-            }
+        response: result,
+        waitForAnswer: result.requiresImmediateRenegotiation
+          ? (answer: SessionDescription) => this.completeAnswer(participant, fence, answer)
           : undefined,
       };
     });
@@ -343,26 +253,12 @@ export class RoomMedia {
 
   async renegotiate(
     participant: Participant,
-    input: unknown,
+    { generation, mutationId, sessionDescription }: RenegotiateRequest,
   ): Promise<void> {
-    const body = objectBody(input);
-    const mutationId = boundedString(
-      body.mutationId,
-      "mutationId",
-      MUTATION_ID,
-    );
-    const generation = boundedGeneration(body.generation);
     this.captureSessionFence(participant, "consumer", generation);
-    if (!isSessionDescription(body.sessionDescription, "answer")) {
-      throw new RequestError(
-        400,
-        "answer_invalid",
-        "Renegotiation requires a valid SDP answer.",
-      );
-    }
     await this.queueFor(participant, "consumer").complete(
       mutationId,
-      body.sessionDescription,
+      sessionDescription,
     );
   }
 
@@ -443,9 +339,9 @@ export class RoomMedia {
     mids: string[],
   ): Promise<void> {
     if (mids.length === 0) return;
-    let response: SfuTracksResponse;
+    let rawResponse: SfuResponse;
     try {
-      response = await this.sfu.closeTracks(sessionId, [...new Set(mids)]);
+      rawResponse = await this.sfu.closeTracks(sessionId, [...new Set(mids)]);
     } catch (error) {
       if (
         error instanceof SfuRequestError &&
@@ -455,7 +351,7 @@ export class RoomMedia {
       }
       throw error;
     }
-    assertTrackResponse(response, "close", isAlreadyClosedTrackError);
+    const response = parseSfuCloseResponse(rawResponse);
     if (response.requiresImmediateRenegotiation) {
       throw new SessionQueueError(
         "cleanup_reconnect_required",
@@ -481,14 +377,10 @@ export class RoomMedia {
       if (pending) {
         const remaining = pending.expiresAt - this.now();
         if (remaining > 0) {
+          const fence = { kind, lifecycleVersion: participant.lifecycleVersion, session };
           queue.restoreBlocked<SessionDescription>(
             pending.mutationId,
-            async (answer) => {
-              await this.sfu.renegotiate(session.id, answer);
-              session.pendingNegotiation = undefined;
-              session.invalid = false;
-              await this.persist(this.room);
-            },
+            (answer) => this.completeAnswer(participant, fence, answer),
             remaining,
           );
         } else {
@@ -499,6 +391,20 @@ export class RoomMedia {
       this.queues.set(key, queue);
     }
     return queue;
+  }
+
+  private async completeAnswer(
+    participant: Participant,
+    fence: SessionFence,
+    answer: SessionDescription,
+  ): Promise<void> {
+    this.assertSessionFence(participant, fence);
+    await this.sfu.renegotiate(fence.session.id, answer);
+    this.assertSessionFence(participant, fence);
+    fence.session.pendingNegotiation = undefined;
+    fence.session.invalid = false;
+    participant.lastSeenAt = this.now();
+    await this.persist(this.room);
   }
 
   private captureSessionFence(
@@ -542,16 +448,25 @@ export class RoomMedia {
     }
   }
 
-  private async ensureSessionFence(
-    participant: Participant,
-    fence: SessionFence,
-  ): Promise<void> {
+  private async acceptAddedTracks(
+    session: SessionState,
+    queue: SessionMutationQueue,
+    rawResponse: SfuResponse,
+    operation: "publish" | "subscribe",
+    requestedMids: string[] = [],
+  ): Promise<SfuTracksResponse> {
+    const midsChanged = this.recordMids(session, requestedMids, rawResponse);
+    let response: SfuTracksResponse;
     try {
-      this.assertSessionFence(participant, fence);
+      response = parseSfuTracksResponse(rawResponse, operation);
     } catch (error) {
+      session.invalid = true;
+      queue.invalidate();
       await this.persist(this.room);
       throw error;
     }
+    if (midsChanged) await this.persist(this.room);
+    return response;
   }
 
   private async ensurePublicationTargetsCurrent(
@@ -570,15 +485,13 @@ export class RoomMedia {
   private recordMids(
     session: SessionState,
     requestedMids: string[],
-    response: SfuTracksResponse,
+    response: SfuResponse,
   ): boolean {
     const mids = [
       ...new Set([
         ...session.mids,
         ...requestedMids,
-        ...(response.tracks ?? [])
-          .map((track) => track.mid)
-          .filter(Boolean),
+        ...sfuTrackMids(response),
       ]),
     ];
     if (
@@ -649,10 +562,8 @@ function subscriptionResponse(
   sessionDescription?: SessionDescription,
   requiresImmediateRenegotiation = false,
 ): SubscriptionResponse {
-  return {
+  const fields = {
     mutationId,
-    requiresImmediateRenegotiation,
-    sessionDescription,
     subscriptions: subscriptions.map(({ key, kind, mid, participantId }) => ({
       key,
       kind,
@@ -660,40 +571,18 @@ function subscriptionResponse(
       participantId,
     })),
   };
-}
-
-function assertTrackResponse(
-  response: SfuTracksResponse,
-  operation: string,
-  ignoreItem: (track: SfuTrack) => boolean = () => false,
-): void {
-  if (hasSfuError(response)) {
-    throw sfuResponseError(
-      response,
-      `Realtime SFU ${operation} failed. Retry with the request ID.`,
-    );
+  if (requiresImmediateRenegotiation) {
+    if (sessionDescription?.type !== "offer") {
+      throw new RequestError(
+        502,
+        "subscribe_offer_missing",
+        "Realtime SFU required renegotiation without returning an SDP offer.",
+        true,
+      );
+    }
+    return { ...fields, requiresImmediateRenegotiation: true, sessionDescription };
   }
-  const itemError = trackItemError(response, operation, ignoreItem);
-  if (itemError) throw itemError;
-}
-
-function isAlreadyClosedTrackError(track: SfuTrack): boolean {
-  return track.errorCode === "close_track_error";
-}
-
-function trackItemError(
-  response: SfuTracksResponse,
-  operation: string,
-  ignoreItem: (track: SfuTrack) => boolean = () => false,
-): SfuRequestError | undefined {
-  for (const track of response.tracks ?? []) {
-    if (!hasSfuError(track) || ignoreItem(track)) continue;
-    return sfuResponseError(
-      track,
-      `Realtime SFU ${operation} failed for a track. Retry with the request ID.`,
-    );
-  }
-  return undefined;
+  return { ...fields, requiresImmediateRenegotiation: false, sessionDescription };
 }
 
 function indexTracks(
@@ -704,22 +593,4 @@ function indexTracks(
       .filter((track) => track.trackName)
       .map((track) => [track.trackName!, track]),
   );
-}
-
-function arrayBody(value: unknown, name: string): unknown[] {
-  if (!Array.isArray(value)) {
-    throw new RequestError(400, "body_invalid", `${name} must be an array.`);
-  }
-  return value;
-}
-
-function boundedGeneration(value: unknown): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 1) {
-    throw new RequestError(
-      400,
-      "generation_invalid",
-      "A positive media generation is required.",
-    );
-  }
-  return value as number;
 }

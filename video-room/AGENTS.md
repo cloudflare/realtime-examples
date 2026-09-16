@@ -7,17 +7,24 @@ participants, one Durable Object per room, and explicit authentication,
 authorization, reconnect, and cleanup. Do not turn it into a conferencing
 framework.
 
+Use [ARCHITECTURE.md](ARCHITECTURE.md) for the flow and
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md) for symptoms. The invariants below must
+survive adaptations.
+
 ## Code map
 
-- Browser behavior: `src/client/`, especially `media.ts`, `lifecycle.ts`,
-  `notifications.ts`, and `safety-poller.ts`.
-- HTTP and authentication boundary: `src/worker.ts` and `src/server/auth.ts`.
+- React presentation: `src/client/App.tsx`; page startup: `main.tsx`.
+- Browser behavior: `src/client/room-controller.ts`, `media.ts`, `lifecycle.ts`,
+  `notifications.ts`, and `background.ts`.
+- HTTP and authentication boundary: Hono routes in `src/worker.ts`,
+  `src/server/auth.ts`, and response formatting in `src/server/http.ts`.
 - Room state and lifecycle: `src/server/room.ts`, `room-media.ts`,
   `room-state.ts`, and `video-room.ts`.
 - Negotiation ownership: `lifecycle-queue.ts` and
   `session-mutation-queue.ts`.
 - Realtime SFU access: `src/server/realtime.ts`.
-- Browser/Worker contract: `src/shared/protocol.ts`.
+- Browser/Worker contract: Zod schemas and inferred types in
+  `src/shared/protocol.ts`; HTTP response validation in `src/client/api.ts`.
 - Runtime integration tests: `tests/workerd/`.
 
 ## Security
@@ -54,20 +61,28 @@ framework.
   Use the actual HTTP status for retry decisions.
 - Parse only the public `errorCode` and `errorDescription` fields, and never
   return provider descriptions to the browser.
-- Keep every direct SFU request bounded by a timeout.
+- Preserve the SFU client's timeout while awaiting response headers.
 
 ## Room lifecycle
 
+- React subscribes to the room controller's view snapshots. Keep room actions,
+  media ownership and page resume outside component effects. A video component
+  detaches its stream on unmount; the controller decides when tracks stop.
 - One named Durable Object owns membership, creator authority, publication
   discovery, revisions, session state, stale cleanup, and room termination.
 - Browser and participant lifecycle operations remain serialized and
   idempotent. Explicit Leave cannot be undone by a delayed reconnect.
+- Save schema-validated join/reconnect membership inside the current lifecycle
+  transition before starting media setup. A failed publish or subscribe must
+  retain that membership for recovery. Promote the room UI only after media
+  setup succeeds.
 - Reconnect reuses the participant identity while replacing both SFU sessions.
 - Seal or invalidate session queues before cleanup, drain active work, retain
   returned mids, and close known resources before changing presence.
 - Leave, termination, stale expiry, and repeated cleanup must converge safely.
   If forced cleanup fails, keep presence and schedule another alarm attempt.
-- Clear browser membership and media only after Leave or Terminate is confirmed.
+- During Leave or Terminate, close PeerConnections for teardown but retain
+  membership and local capture until the server confirms cleanup.
 - Cleanup may accept an actual HTTP 404 or 410 and the public already-absent
   item result. Other per-track errors retain state for retry.
 - Terminated tombstones remain authorized only for the bounded terminal
@@ -75,6 +90,10 @@ framework.
 
 ## Durable Objects and notifications
 
+- Validate external JSON once in the Worker, after authentication and the body
+  size check. Resolve principal-dependent defaults there. The Durable Object
+  receives typed commands and retains stateful authorization and lifecycle
+  checks, including checks after asynchronous work.
 - Browser-facing APIs stay on HTTP. Ordinary room operations use typed Durable
   Object RPC and serializable tagged unions for expected outcomes.
 - Reserve thrown RPC exceptions for unexpected runtime or invariant failures.
@@ -86,6 +105,10 @@ framework.
   and send them through `Sec-WebSocket-Protocol`.
 - Socket payloads contain only `room-changed` and a revision. Socket close is
   not a leave signal; heartbeat expiry remains authoritative.
+- Keep the `Cf-Ray`/`x-request-id` diagnostic ID separate from retry-stable
+  reconnect request IDs and media mutation IDs. Validate browser HTTP responses
+  before replacing membership; malformed successful responses must not trigger
+  automatic mutation retries.
 
 ## Scope
 
@@ -99,13 +122,16 @@ framework.
 
 ## Verification
 
+Run the declared checks for implementation changes:
+
 ```bash
 npm ci
 npm run check
 npx wrangler deploy --dry-run
 ```
 
-Live media validation is opt-in:
+`npm run check` covers types, mocked SFU behavior, build, and credential scans.
+With the dev server running, opt into real SFU media and recovery validation:
 
 ```bash
 LIVE_VIDEO_ROOM_URL='http://localhost:8787' npm run test:live
@@ -113,4 +139,6 @@ LIVE_VIDEO_ROOM_URL='http://localhost:8787' npm run test:live
 
 When changing authentication, add allowed and denied tests. When changing media
 or lifecycle behavior, retain focused concurrency, reconnect, repeated cleanup,
-and stale-expiry coverage.
+and stale-expiry coverage. Prefer an existing scenario or a focused regression
+over tests that repeat library behavior. Documentation-only changes use the
+repository foundation checks; rerun media validation when behavior changes.

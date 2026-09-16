@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import type { PublishRequest } from "../../src/shared/protocol";
 import { RequestError } from "../../src/server/auth";
 import { SfuRequestError } from "../../src/server/realtime";
 import { SessionQueueError } from "../../src/server/session-mutation-queue";
@@ -209,7 +210,7 @@ test("close checks every item after an already-absent result", async () => {
 });
 
 test("publish item failure invalidates the session before retry", async () => {
-  const { coordinator, room, sfu } = harness();
+  const { coordinator, room, sfu, writes } = harness();
   const joined = await coordinator.join(alice, {
     clientId: "client-alice",
     displayName: "Alice",
@@ -229,7 +230,7 @@ test("publish item failure invalidates the session before retry", async () => {
       },
     ],
   });
-  const input = {
+  const input: PublishRequest = {
     generation: joined.generation,
     mutationId: "mutation-publish-item-error",
     sessionDescription: OFFER,
@@ -255,6 +256,8 @@ test("publish item failure invalidates the session before retry", async () => {
     "server-audio-mid",
     "server-video-mid",
   ]);
+  assert.deepEqual(writes.at(-1)?.participants[joined.participantId]?.producer.mids,
+    participant?.producer.mids);
 
   await assert.rejects(
     coordinator.publish(alice, joined.memberToken, input),
@@ -278,6 +281,50 @@ test("publish item failure invalidates the session before retry", async () => {
     mids: ["0", "1", "server-audio-mid", "server-video-mid"],
     sessionId: "session-1",
   });
+});
+
+test("publish retains allocated mids beside malformed items for cleanup", async () => {
+  const { coordinator, room, sfu, writes } = harness();
+  const joined = await coordinator.join(alice, {
+    clientId: "client-alice",
+    displayName: "Alice",
+    memberToken: ALICE_MEMBER_TOKEN,
+  });
+  sfu.addResponses.push({
+    sessionDescription: ANSWER,
+    tracks: [
+      { mid: "server-mid" },
+      null,
+      { mid: 17 },
+      { mid: "second-mid", trackName: 17 },
+    ],
+  });
+  const request: PublishRequest = {
+    generation: joined.generation,
+    mutationId: "mutation-malformed-response",
+    sessionDescription: OFFER,
+    tracks: [{ kind: "audio", mid: "0" }, { kind: "video", mid: "1" }],
+  };
+
+  await assert.rejects(coordinator.publish(alice, joined.memberToken, request),
+    (error: unknown) => error instanceof SfuRequestError &&
+      error.code === "sfu_response_invalid");
+  const producer = room.participants[joined.participantId]!.producer;
+  const mids = ["0", "1", "server-mid", "second-mid"];
+  assert.equal(producer.invalid, true);
+  assert.deepEqual(producer.mids, mids);
+  assert.deepEqual(writes.at(-1)?.participants[joined.participantId]?.producer, producer);
+  await assert.rejects(coordinator.publish(alice, joined.memberToken, request),
+    (error: unknown) => error instanceof RequestError &&
+      error.code === "media_generation_stale");
+  assert.equal(sfu.added.length, 1);
+
+  await coordinator.reconnect(alice, joined.memberToken, {
+    clientId: "client-alice",
+    displayName: "Alice",
+    requestId: "reconnect-malformed-response",
+  });
+  assert.deepEqual(sfu.closed, [{ sessionId: producer.id, mids }]);
 });
 
 test("subscribe item failure invalidates the session before retry", async () => {

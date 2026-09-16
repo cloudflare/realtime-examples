@@ -12,7 +12,7 @@ test.skip(
   "Set LIVE_VIDEO_ROOM_URL to the local Vite origin.",
 );
 
-test("two fresh tabs in one browser context publish, subscribe, refresh, and leave", async ({
+test("two fresh tabs recover initial setup, publish, subscribe, refresh, and leave", async ({
   browser,
 }) => {
   test.setTimeout(60_000);
@@ -32,20 +32,32 @@ test("two fresh tabs in one browser context publish, subscribe, refresh, and lea
   const aliceClientId = await clientId(alice);
 
   const bobPage = context.waitForEvent("page");
-  await alice
-    .getByRole("button", { name: "Open another participant" })
-    .click();
+  await alice.getByRole("button", { name: "Open another participant" }).click();
   const bob = await bobPage;
   await bob.waitForLoadState();
   await expect(bob).toHaveURL(new RegExp(`${roomPath}$`));
   await expect(bob.getByLabel("Display name")).toHaveValue("");
   assertFreshClientId(aliceClientId, await clientId(bob));
-  await join(bob, "Bob");
+  // Publication can succeed before a later setup request loses its connection.
+  // Refresh must resume the confirmed membership and replace its media sessions.
+  await bob.route(
+    "**/api/rooms/*/subscribe",
+    (route) => route.abort("failed"),
+    { times: 1 },
+  );
+  await bob.getByLabel("Display name").fill("Bob");
+  await bob.getByRole("button", { name: "Join room" }).click();
+  await expect(bob.locator("#status")).toContainText("Failed to fetch");
+  await bob.reload();
+  await expect(bob.getByRole("button", { name: "Leave" })).toBeVisible({
+    timeout: 20_000,
+  });
 
   await expect(alice.locator(".tile-label", { hasText: "Bob" })).toBeVisible();
   await expect(bob.locator(".tile-label", { hasText: "Alice" })).toBeVisible();
+  // Publisher replacement can also require the other participant to reconnect.
   await expect
-    .poll(() => activeRemoteTrackCount(alice, "video"))
+    .poll(() => activeRemoteTrackCount(alice, "video"), { timeout: 20_000 })
     .toBeGreaterThan(0);
   await expect
     .poll(() => activeRemoteTrackCount(bob, "video"))
@@ -72,28 +84,25 @@ test("two fresh tabs in one browser context publish, subscribe, refresh, and lea
     );
   }
   await expect(alice.locator(".video-tile")).toHaveCount(2);
-  await expect(alice.locator(".tile-label", { hasText: "Alice" })).toHaveCount(1);
-  await expect.poll(
-    () => activeRemoteTrackCount(alice, "video"),
-    { timeout: 20_000 },
-  ).toBeGreaterThan(0);
-  await expect.poll(
-    () => activeRemoteTrackCount(alice, "audio"),
-    { timeout: 20_000 },
-  ).toBeGreaterThan(0);
+  await expect(alice.locator(".tile-label", { hasText: "Alice" })).toHaveCount(
+    1,
+  );
+  await expect
+    .poll(() => activeRemoteTrackCount(alice, "video"), { timeout: 20_000 })
+    .toBeGreaterThan(0);
+  await expect
+    .poll(() => activeRemoteTrackCount(alice, "audio"), { timeout: 20_000 })
+    .toBeGreaterThan(0);
   const bobFramesAfterRefresh = await remoteVideoFrameCount(bob);
-  await expect.poll(
-    () => activeRemoteTrackCount(bob, "video"),
-    { timeout: 20_000 },
-  ).toBeGreaterThan(0);
-  await expect.poll(
-    () => activeRemoteTrackCount(bob, "audio"),
-    { timeout: 20_000 },
-  ).toBeGreaterThan(0);
-  await expect.poll(
-    () => remoteVideoFrameCount(bob),
-    { timeout: 20_000 },
-  ).toBeGreaterThan(bobFramesAfterRefresh + 5);
+  await expect
+    .poll(() => activeRemoteTrackCount(bob, "video"), { timeout: 20_000 })
+    .toBeGreaterThan(0);
+  await expect
+    .poll(() => activeRemoteTrackCount(bob, "audio"), { timeout: 20_000 })
+    .toBeGreaterThan(0);
+  await expect
+    .poll(() => remoteVideoFrameCount(bob), { timeout: 20_000 })
+    .toBeGreaterThan(bobFramesAfterRefresh + 5);
 
   await bob.getByRole("button", { name: "Leave" }).click();
   await expect(alice.locator(".video-tile")).toHaveCount(1, {
@@ -135,7 +144,9 @@ async function join(
   await page.getByLabel("Display name").fill(displayName);
   await page.getByRole("button", { name: "Join room" }).click();
   await expect(page.getByRole("button", { name: "Leave" })).toBeVisible();
-  await expect(page.locator(".tile-label", { hasText: displayName })).toBeVisible();
+  await expect(
+    page.locator(".tile-label", { hasText: displayName }),
+  ).toBeVisible();
 }
 
 async function clientId(page: Page): Promise<string | null> {
@@ -179,33 +190,40 @@ async function activeRemoteTrackCount(
   page: Page,
   kind: "audio" | "video",
 ): Promise<number> {
-  return page.locator("video:not([muted])").evaluateAll(
+  return page.locator("video").evaluateAll(
     (videos, trackKind) =>
-      videos.reduce((count, video) => {
-        const stream = (video as HTMLVideoElement)
-          .srcObject as MediaStream | null;
-        const tracks =
-          trackKind === "video"
-            ? stream?.getVideoTracks() ?? []
-            : stream?.getAudioTracks() ?? [];
-        return (
-          count +
-          tracks.filter(
-            (track) => track.readyState === "live" && !track.muted,
-          ).length
-        );
-      }, 0),
+      videos
+        .filter((video) => !(video as HTMLVideoElement).muted)
+        .reduce((count, video) => {
+          const stream = (video as HTMLVideoElement)
+            .srcObject as MediaStream | null;
+          const tracks =
+            trackKind === "video"
+              ? (stream?.getVideoTracks() ?? [])
+              : (stream?.getAudioTracks() ?? []);
+          return (
+            count +
+            tracks.filter(
+              (track) => track.readyState === "live" && !track.muted,
+            ).length
+          );
+        }, 0),
     kind,
   );
 }
 
 async function remoteVideoFrameCount(page: Page): Promise<number> {
-  return page.locator("video:not([muted])").evaluateAll((videos) =>
-    videos.reduce(
-      (count, video) =>
-        count +
-        (video as HTMLVideoElement).getVideoPlaybackQuality().totalVideoFrames,
-      0,
-    ),
-  );
+  return page
+    .locator("video")
+    .evaluateAll((videos) =>
+      videos
+        .filter((video) => !(video as HTMLVideoElement).muted)
+        .reduce(
+          (count, video) =>
+            count +
+            (video as HTMLVideoElement).getVideoPlaybackQuality()
+              .totalVideoFrames,
+          0,
+        ),
+    );
 }

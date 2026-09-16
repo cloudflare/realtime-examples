@@ -22,9 +22,7 @@ export class KeyedLifecycleQueue {
     const existing = queue.operations.get(operationId);
     if (existing) return existing as Promise<Result>;
 
-    const result = queue.tail
-      .catch(() => undefined)
-      .then(operation);
+    const result = queue.tail.then(operation);
     queue.operations.set(operationId, result);
     const tail = result.then(
       () => undefined,

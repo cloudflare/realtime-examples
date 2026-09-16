@@ -2,7 +2,11 @@ import { DurableObject } from "cloudflare:workers";
 
 import {
   ROOM_SOCKET_PROTOCOL,
-  type ApiErrorBody,
+  type RenegotiateRequest,
+  type SubscribeRequest,
+  type PublishRequest,
+  type ReconnectRequest,
+  type JoinRequest,
   type JoinResponse,
   type PublishResponse,
   type RoomSnapshot,
@@ -16,13 +20,11 @@ import {
 import {
   broadcastRoomChanged,
   closeParticipantSockets,
-  restoreSocketAttachment,
   socketAttachment,
   socketTicketFromProtocols,
 } from "./notifications";
 import {
   RealtimeSfuClient,
-  SfuRequestError,
   type RealtimeEnv,
 } from "./realtime";
 import {
@@ -30,7 +32,7 @@ import {
   emptyRoom,
   type PersistedRoom,
 } from "./room";
-import { SessionQueueError } from "./session-mutation-queue";
+import { errorResponse, expectedRoomError } from "./http";
 
 type Env = RealtimeEnv & {
   ROOM_STALE_SECONDS?: string;
@@ -73,7 +75,7 @@ export class VideoRoom extends DurableObject<Env> {
 
   join(
     context: RoomRpcContext,
-    input: unknown,
+    input: JoinRequest,
   ): Promise<RoomRpcResult<JoinResponse>> {
     return this.#runRpc(context, (coordinator) =>
       coordinator.join(context.principal, input),
@@ -82,7 +84,7 @@ export class VideoRoom extends DurableObject<Env> {
 
   reconnect(
     context: RoomRpcContext,
-    input: unknown,
+    input: ReconnectRequest,
   ): Promise<RoomRpcResult<JoinResponse>> {
     return this.#runRpc(context, (coordinator) =>
       coordinator.reconnect(
@@ -122,7 +124,7 @@ export class VideoRoom extends DurableObject<Env> {
 
   publish(
     context: RoomRpcContext,
-    input: unknown,
+    input: PublishRequest,
   ): Promise<RoomRpcResult<PublishResponse>> {
     return this.#runRpc(context, (coordinator) =>
       coordinator.publish(context.principal, context.memberToken, input),
@@ -131,7 +133,7 @@ export class VideoRoom extends DurableObject<Env> {
 
   subscribe(
     context: RoomRpcContext,
-    input: unknown,
+    input: SubscribeRequest,
   ): Promise<RoomRpcResult<SubscriptionResponse>> {
     return this.#runRpc(context, (coordinator) =>
       coordinator.subscribe(context.principal, context.memberToken, input),
@@ -140,7 +142,7 @@ export class VideoRoom extends DurableObject<Env> {
 
   renegotiate(
     context: RoomRpcContext,
-    input: unknown,
+    input: RenegotiateRequest,
   ): Promise<RoomRpcResult<{ ok: true }>> {
     return this.#runRpc(context, async (coordinator) => {
       await coordinator.renegotiate(
@@ -165,7 +167,7 @@ export class VideoRoom extends DurableObject<Env> {
   }
 
   async fetch(request: Request): Promise<Response> {
-    const requestId = crypto.randomUUID();
+    const requestId = request.headers.get("x-request-id") ?? crypto.randomUUID();
     try {
       if (
         request.method !== "GET" ||
@@ -217,16 +219,14 @@ export class VideoRoom extends DurableObject<Env> {
   }
 
   webSocketMessage(socket: WebSocket): void {
-    safelyRestoreSocketAttachment(socket);
     socket.close(1008, "Notification socket is server-to-client only.");
   }
 
-  webSocketClose(socket: WebSocket): void {
-    safelyRestoreSocketAttachment(socket);
+  webSocketClose(): void {
+    // Socket closure does not change presence; heartbeat expiry owns departure.
   }
 
   webSocketError(socket: WebSocket): void {
-    safelyRestoreSocketAttachment(socket);
     socket.close(1011, "Notification socket error.");
   }
 
@@ -328,100 +328,4 @@ function staleMilliseconds(value: string | undefined): number {
     return 45_000;
   }
   return seconds * 1000;
-}
-
-function safelyRestoreSocketAttachment(socket: WebSocket): void {
-  try {
-    restoreSocketAttachment(socket.deserializeAttachment());
-  } catch {
-    // Socket lifecycle errors never alter room presence.
-  }
-}
-
-function json(
-  body: ApiErrorBody | unknown,
-  status = 200,
-  requestId?: string,
-): Response {
-  return Response.json(body, {
-    headers: {
-      "cache-control": "no-store",
-      ...(requestId ? { "x-request-id": requestId } : {}),
-    },
-    status,
-  });
-}
-
-export function errorResponse(
-  error: unknown,
-  requestId: string,
-): Response {
-  const expected = expectedRoomError(error, requestId);
-  if (expected) {
-    return json(
-      {
-        error: {
-          code: expected.code,
-          message: expected.message,
-          requestId,
-          retryable: expected.retryable,
-        },
-      } satisfies ApiErrorBody,
-      expected.status,
-      requestId,
-    );
-  }
-  console.error("video-room request failed", { requestId });
-  return json(
-    {
-      error: {
-        code: "internal_error",
-        message: "The room operation failed. Retry with the request ID.",
-        requestId,
-        retryable: true,
-      },
-    } satisfies ApiErrorBody,
-    500,
-    requestId,
-  );
-}
-
-function expectedRoomError(
-  error: unknown,
-  requestId: string,
-): RoomRpcError | undefined {
-  if (error instanceof RequestError) {
-    return {
-      code: error.code,
-      message: error.message,
-      retryable: error.retryable,
-      status: error.status,
-    };
-  }
-  if (error instanceof SessionQueueError) {
-    return {
-      code: error.code,
-      message: error.message,
-      retryable: error.retryable,
-      status: 409,
-    };
-  }
-  if (error instanceof SfuRequestError) {
-    console.error("Realtime SFU request failed", {
-      code: error.code,
-      ...(error.track?.mid ? { mid: error.track.mid } : {}),
-      requestId,
-      status: error.status,
-      ...(error.track?.trackName
-        ? { trackName: error.track.trackName }
-        : {}),
-    });
-    return {
-      code: error.code,
-      message: error.message,
-      retryable: error.retryable,
-      status: error.status,
-    };
-  }
-  return undefined;
 }
