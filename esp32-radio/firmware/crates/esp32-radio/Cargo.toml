@@ -1,0 +1,34 @@
+[package]
+name = "esp32-radio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "ESP-IDF application for the ESP32-S3 Cloudflare SFU radio"
+
+[lib]
+crate-type = ["staticlib"]
+test = false
+doctest = false
+
+[dependencies]
+radio-core.workspace = true
+radio-webrtc.workspace = true
+str0m-rust-crypto.workspace = true
+dimpl.workspace = true
+zeroize.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(target_os = "espidf")'.dependencies]
+esp-idf-hal = { version = "=0.46.2", default-features = false, features = ["std"] }
+
+[build-dependencies]
+embuild = "=0.33.5"
+
+[features]
+crypto-self-test = []
+crypto-profile = []
+
+[lints]
+workspace = true

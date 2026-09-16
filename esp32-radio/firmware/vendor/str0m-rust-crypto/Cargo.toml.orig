@@ -1,0 +1,24 @@
+[package]
+name = "str0m-rust-crypto"
+version = "0.6.0"
+authors = ["Martin Algesten <martin@algesten.se>"]
+description = "Pure Rust crypto backend for str0m WebRTC"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/algesten/str0m"
+readme = "README.md"
+edition = "2024"
+
+# MSRV
+rust-version = "1.85.0"
+
+[dependencies]
+str0m-proto = { workspace = true, features = ["dtls"] }
+dimpl = { workspace = true, features = ["rust-crypto", "rcgen"] }
+time.workspace = true
+hmac.workspace = true
+aes-gcm.workspace = true
+aes.workspace = true
+ctr.workspace = true
+p256.workspace = true
+sha1.workspace = true
+sha2.workspace = true

@@ -1,0 +1,18 @@
+target
+chrome-user-data-dir
+.DS_Store
+tracing*
+*.svg
+xamples
+.vscode
+.idea
+crates/fuzz/corpus
+crates/fuzz/artifacts
+dimpl
+webrtc
+*.pcap
+.wt
+
+# This vendored copy preserves published protocol fixtures and documentation.
+!tests/data/*.pcap
+!docs/bwe-dataflow.svg

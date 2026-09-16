@@ -1,0 +1,17 @@
+[package]
+name = "radio-webrtc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Task-owned str0m transport for the radio, testable on host and ESP-IDF"
+
+[dependencies]
+radio-core.workspace = true
+str0m.workspace = true
+
+[dev-dependencies]
+str0m-rust-crypto.workspace = true
+
+[lints]
+workspace = true

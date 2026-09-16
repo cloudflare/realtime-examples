@@ -1,0 +1,3 @@
+# Preserve upstream formatting and unified-diff context lines.
+**/vendor/** -whitespace linguist-vendored
+*.patch -whitespace

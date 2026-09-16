@@ -59,6 +59,34 @@ examples:
       - Control requires a desktop browser with keyboard and pointer-lock support.
       - Access policy provisioning, admission limits, and rate limiting are deployment responsibilities.
 
+  - id: esp32-radio
+    title: Pocket Radio with ESP32-S3
+    path: esp32-radio
+    kind: blueprint
+    summary: Follow embedded firmware through SFU negotiation, Opus publication, and authorized DataChannels using a working ESP32-S3 radio.
+    category: embedded-device
+    difficulty: advanced
+    components:
+      - browser
+      - Worker
+      - Durable Object
+      - ESP32-S3
+      - Rust
+      - ESP-IDF
+      - Realtime SFU
+    maturity: experimental
+    recommended_starting_point: true
+    setup_time_minutes: null
+    hosted_demo: null
+    architecture: esp32-radio/ARCHITECTURE.md
+    credential_boundary: server
+    known_limitations:
+      - Firmware targets ESP32-S3-DevKitC-1 N32R16V and builds with the pinned Linux x86_64 toolchain.
+      - Outbound IPv4 UDP is required; TURN and TCP fallback are not implemented.
+      - The example's Worker admits eight listeners per board and grants one controller; listeners reconnect manually after a board restart.
+      - Music is supplied separately; sound plays in browsers, with no device microphone or speaker support.
+      - The shared viewer password is an application seam; identity integration and rate limiting are deployment responsibilities.
+
   - id: ai-tts-stt
     title: Realtime audio TTS and STT
     path: ai-tts-stt
