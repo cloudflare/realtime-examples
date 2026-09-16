@@ -56,12 +56,11 @@ test("room operations use RPC while fetch remains socket-only", async () => {
   const stub = env.ROOMS.getByName(roomId);
   const context = rpcContext("alice");
 
-  await expect(stub.join(context, null)).resolves.toEqual({
+  await expect(stub.getSnapshot(context)).resolves.toMatchObject({
     error: {
-      code: "body_invalid",
-      message: "Send a JSON object.",
+      code: "member_token_required",
       retryable: false,
-      status: 400,
+      status: 401,
     },
     type: "error",
   });

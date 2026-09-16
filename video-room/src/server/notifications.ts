@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 import {
   ROOM_SOCKET_PROTOCOL,
   ROOM_SOCKET_TICKET_PREFIX,
@@ -7,9 +9,10 @@ import {
 const PARTICIPANT_ID = /^p_[a-zA-Z0-9]{1,32}$/;
 export const SOCKET_TICKET = /^[a-zA-Z0-9_-]{32,128}$/;
 
-export type SocketAttachment = {
-  participantId: string;
-};
+const socketAttachmentSchema = z.strictObject({
+  participantId: z.string().regex(PARTICIPANT_ID),
+});
+export type SocketAttachment = z.infer<typeof socketAttachmentSchema>;
 
 type HibernatingSocket = {
   close(code?: number, reason?: string): void;
@@ -35,27 +38,16 @@ export function socketTicketFromProtocols(
 }
 
 export function socketAttachment(participantId: string): SocketAttachment {
-  if (!PARTICIPANT_ID.test(participantId)) {
-    throw new Error("Invalid participant attachment.");
-  }
-  return { participantId };
+  const parsed = socketAttachmentSchema.safeParse({ participantId });
+  if (!parsed.success) throw new Error("Invalid participant attachment.");
+  return parsed.data;
 }
 
 export function restoreSocketAttachment(
   value: unknown,
 ): SocketAttachment | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-  const record = value as Record<string, unknown>;
-  if (
-    Object.keys(record).length !== 1 ||
-    typeof record.participantId !== "string" ||
-    !PARTICIPANT_ID.test(record.participantId)
-  ) {
-    return undefined;
-  }
-  return { participantId: record.participantId };
+  const parsed = socketAttachmentSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
 }
 
 export function broadcastRoomChanged(

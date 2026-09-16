@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="scheme-light">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -10,120 +10,8 @@
     <title>Realtime room</title>
     <link rel="icon" href="data:," />
   </head>
-  <body>
-    <a class="skip-link" href="#main-content">Skip to room workspace</a>
-    <div class="shell">
-      <header class="app-header">
-        <div class="app-identity">
-          <a class="brand" href="/" title="Create a new room">
-            Room
-          </a>
-          <span class="room-name">
-            <span aria-hidden="true">/</span>
-            <strong id="room-id"></strong>
-          </span>
-        </div>
-        <div class="room-tools" role="group" aria-label="Room utilities">
-          <button id="copy-link" class="button button-quiet" type="button">
-            Copy link
-          </button>
-          <button
-            id="open-participant"
-            class="button button-secondary"
-            type="button"
-          >
-            Open another participant
-          </button>
-        </div>
-      </header>
-
-      <main id="main-content" class="workbench" tabindex="-1">
-        <section
-          id="lobby"
-          class="lobby"
-          aria-labelledby="lobby-title"
-          aria-describedby="status"
-        >
-          <div class="lobby-task">
-            <h1 id="lobby-title">
-              Join <span id="lobby-room-id"></span>
-            </h1>
-            <p class="task-copy">
-              Enter your name, then allow camera and microphone access.
-            </p>
-
-            <form id="join-form" class="join-form">
-              <label for="display-name">Display name</label>
-              <div class="join-fields">
-                <input
-                  id="display-name"
-                  name="display-name"
-                  maxlength="48"
-                  autocomplete="name"
-                  placeholder="Ada"
-                  required
-                />
-                <button class="button button-primary" type="submit">
-                  Join room
-                </button>
-              </div>
-              <p class="form-note">
-                Localhost uses a development identity. Deployed rooms require
-                Cloudflare Access.
-              </p>
-            </form>
-
-            <p class="tab-note">
-              Testing with two tabs? Use
-              <strong>Open another participant</strong>. Do not use Duplicate
-              Tab; it can reuse this tab's session identity.
-            </p>
-          </div>
-        </section>
-
-        <section
-          id="room"
-          class="room"
-          hidden
-          aria-label="Video room"
-          aria-describedby="status"
-        >
-          <div class="media-stage">
-            <div class="stage-header">
-              <p id="participant-count" class="participant-count">
-                0 participants
-              </p>
-            </div>
-            <div id="tiles" class="tiles" aria-live="polite"></div>
-          </div>
-
-          <div class="room-controls" role="group" aria-label="Room controls">
-            <button id="leave" class="button button-secondary" type="button">
-              Leave
-            </button>
-            <div id="creator-actions" hidden>
-              <button id="terminate" class="button button-danger" type="button">
-                Terminate room
-              </button>
-            </div>
-          </div>
-        </section>
-
-        <div class="status-bar">
-          <span class="status-marker" aria-hidden="true"></span>
-          <span class="status-label" aria-hidden="true">Status</span>
-          <p
-            id="status"
-            role="status"
-            aria-live="polite"
-            aria-atomic="true"
-            data-tone="neutral"
-          >
-            Enter a name to join.
-          </p>
-        </div>
-      </main>
-    </div>
-    <script type="module" src="/src/client/main.ts"></script>
+  <body class="min-h-dvh bg-stone-100 font-sans text-stone-900 antialiased">
+    <div id="root"></div>
+    <script type="module" src="/src/client/main.tsx"></script>
   </body>
 </html>

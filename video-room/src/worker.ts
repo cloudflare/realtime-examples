@@ -1,181 +1,258 @@
+import { Hono, type Context } from "hono";
+import { createMiddleware } from "hono/factory";
+import { requestId } from "hono/request-id";
+import type { z } from "zod";
+
 import {
   assertSameOrigin,
   authenticateRequest,
   RequestError,
   type AuthEnv,
 } from "./server/auth";
+import { errorResponse, rpcResponse } from "./server/http";
 import type { RealtimeEnv } from "./server/realtime";
-import {
-  errorResponse,
-  type RoomRpcContext,
-  type RoomRpcResult,
-  VideoRoom,
-} from "./server/video-room";
+import { type RoomRpcContext, VideoRoom } from "./server/video-room";
 import {
   API_HEADER_MEMBER_TOKEN,
-  type ApiErrorBody,
+  joinRequestSchema,
+  publishRequestSchema,
+  reconnectRequestSchema,
+  renegotiateRequestSchema,
+  roomIdSchema,
+  subscribeRequestSchema,
 } from "./shared/protocol";
 
 export { VideoRoom };
 
 type WorkerEnv = Env & AuthEnv & RealtimeEnv;
+type RoomEnv = {
+  Bindings: WorkerEnv;
+  Variables: {
+    requestId: string;
+    roomId: string;
+    rpc: RoomRpcContext;
+    room: DurableObjectStub<VideoRoom>;
+  };
+};
 
-const ROOM_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
-const API_ROUTE = /^\/api\/rooms\/([^/]+)\/([^/]+)$/;
 const MAX_BODY_BYTES = 1_100_000;
+const roomRoute = "/:action";
+const app = new Hono<RoomEnv>().basePath("/api/rooms/:roomId");
 
-export default {
-  async fetch(request: Request, env: WorkerEnv): Promise<Response> {
-    const url = new URL(request.url);
-    const match = API_ROUTE.exec(url.pathname);
-    if (!match) return env.ASSETS.fetch(request);
+app.use(
+  roomRoute,
+  requestId({
+    // Do not trust a caller's X-Request-Id or mutate WebSocket upgrade headers.
+    headerName: "",
+    generator: (c) => {
+      const ray = c.req.header("cf-ray");
+      return ray && /^[\w-]{1,255}$/.test(ray) ? ray : crypto.randomUUID();
+    },
+  }),
+);
+app.use(roomRoute, async (c, next) => {
+  const roomId = roomIdSchema.safeParse(c.req.param("roomId"));
+  if (!roomId.success) {
+    throw new RequestError(
+      400,
+      "room_id_invalid",
+      "Room names use lowercase letters, numbers, and hyphens.",
+    );
+  }
+  c.set("roomId", roomId.data);
 
-    const requestId = crypto.randomUUID();
-    try {
-      const roomId = decodeURIComponent(match[1] ?? "");
-      if (!ROOM_ID.test(roomId)) {
+  if (c.req.method === "GET" && c.req.param("action") === "socket") {
+    assertSameOrigin(c.req.raw);
+    return next();
+  }
+  if (c.req.method !== "GET") assertSameOrigin(c.req.raw);
+  const principal = await authenticateRequest(c.req.raw, c.env);
+  c.set("rpc", {
+    memberToken: c.req.header(API_HEADER_MEMBER_TOKEN) ?? null,
+    principal,
+    requestId: c.get("requestId"),
+  });
+  // Preserve the API's explicit methods instead of Hono's automatic GET-to-HEAD fallback.
+  if (c.req.method === "HEAD") throw routeNotFound();
+  if (c.req.method !== "GET") {
+    const declaredLength = Number(c.req.header("content-length") ?? 0);
+    if (declaredLength > MAX_BODY_BYTES) throw bodyTooLarge();
+    // Hono caches these bytes for JSON decoding. Check actual size even when a
+    // Content-Length header is present, including bodies ignored by an operation.
+    const body = await c.req.arrayBuffer();
+    if (body.byteLength > MAX_BODY_BYTES) throw bodyTooLarge();
+  }
+  c.set("room", c.env.ROOMS.getByName(roomId.data));
+  await next();
+});
+
+app.get("/socket", (c) => {
+  const headers = new Headers({
+    upgrade: "websocket",
+    "x-request-id": c.get("requestId"),
+  });
+  const protocol = c.req.header("sec-websocket-protocol");
+  if (protocol) headers.set("sec-websocket-protocol", protocol);
+  return c.env.ROOMS.getByName(c.get("roomId")).fetch(
+    "https://video-room.internal/socket",
+    { headers },
+  );
+});
+
+app.post("/join", jsonRequest(joinRequestSchema, withDisplayHint), async (c) =>
+  rpcResponse(
+    await c.get("room").join(c.get("rpc"), c.req.valid("json")),
+    c.get("requestId"),
+    201,
+  ),
+);
+app.post(
+  "/reconnect",
+  jsonRequest(reconnectRequestSchema, withDisplayHint),
+  async (c) =>
+    rpcResponse(
+      await c.get("room").reconnect(c.get("rpc"), c.req.valid("json")),
+      c.get("requestId"),
+    ),
+);
+app.post("/publish", jsonRequest(publishRequestSchema), async (c) =>
+  rpcResponse(
+    await c.get("room").publish(c.get("rpc"), c.req.valid("json")),
+    c.get("requestId"),
+  ),
+);
+app.post("/subscribe", jsonRequest(subscribeRequestSchema), async (c) =>
+  rpcResponse(
+    await c.get("room").subscribe(c.get("rpc"), c.req.valid("json")),
+    c.get("requestId"),
+  ),
+);
+app.post("/renegotiate", jsonRequest(renegotiateRequestSchema), async (c) =>
+  rpcResponse(
+    await c.get("room").renegotiate(c.get("rpc"), c.req.valid("json")),
+    c.get("requestId"),
+  ),
+);
+app.get("/snapshot", async (c) =>
+  rpcResponse(
+    await c.get("room").getSnapshot(c.get("rpc")),
+    c.get("requestId"),
+  ),
+);
+app.post("/heartbeat", async (c) =>
+  rpcResponse(await c.get("room").heartbeat(c.get("rpc")), c.get("requestId")),
+);
+app.post("/socket-ticket", async (c) =>
+  rpcResponse(
+    await c.get("room").issueSocketTicket(c.get("rpc")),
+    c.get("requestId"),
+  ),
+);
+app.post("/leave", async (c) =>
+  rpcResponse(await c.get("room").leave(c.get("rpc")), c.get("requestId")),
+);
+app.post("/terminate", async (c) =>
+  rpcResponse(await c.get("room").terminate(c.get("rpc")), c.get("requestId")),
+);
+app.all(roomRoute, () => {
+  throw routeNotFound();
+});
+app.notFound((c) => c.env.ASSETS.fetch(c.req.raw));
+app.onError((error, c) =>
+  errorResponse(error, c.get("requestId") ?? crypto.randomUUID()),
+);
+
+export default app;
+
+function jsonRequest<S extends z.ZodType<Record<string, unknown>>>(
+  schema: S,
+  normalize: (value: unknown, c: Context<RoomEnv>) => unknown = (value) =>
+    value,
+) {
+  return createMiddleware<RoomEnv, string, { out: { json: z.output<S> } }>(
+    async (c, next) => {
+      let value: unknown;
+      try {
+        // Decode once, including clients that omit Content-Type. The standard
+        // JSON validator skips those bodies; this API has always accepted them.
+        value = await c.req.json();
+      } catch {
         throw new RequestError(
           400,
-          "room_id_invalid",
-          "Room names use lowercase letters, numbers, and hyphens.",
+          "json_invalid",
+          "Send a valid JSON request.",
         );
       }
-      const action = match[2] ?? "";
-
-      if (request.method === "GET" && action === "socket") {
-        assertSameOrigin(request);
-        return await env.ROOMS.getByName(roomId).fetch(
-          "https://video-room.internal/socket",
-          { headers: socketHeaders(request) },
-        );
-      }
-
-      if (request.method !== "GET") assertSameOrigin(request);
-      const principal = await authenticateRequest(request, env);
-      const body =
-        request.method === "GET" || request.method === "HEAD"
-          ? undefined
-          : await readBody(request);
-      const context: RoomRpcContext = {
-        memberToken: request.headers.get(API_HEADER_MEMBER_TOKEN),
-        principal,
-        requestId,
-      };
-      const stub = env.ROOMS.getByName(roomId);
-
-      switch (`${request.method} ${action}`) {
-        case "POST join":
-          return rpcResponse(
-            await stub.join(context, parseJson(body)),
-            requestId,
-            201,
-          );
-        case "POST reconnect":
-          return rpcResponse(
-            await stub.reconnect(context, parseJson(body)),
-            requestId,
-          );
-        case "POST heartbeat":
-          return rpcResponse(await stub.heartbeat(context), requestId);
-        case "GET snapshot":
-          return rpcResponse(await stub.getSnapshot(context), requestId);
-        case "POST socket-ticket":
-          return rpcResponse(await stub.issueSocketTicket(context), requestId);
-        case "POST publish":
-          return rpcResponse(
-            await stub.publish(context, parseJson(body)),
-            requestId,
-          );
-        case "POST subscribe":
-          return rpcResponse(
-            await stub.subscribe(context, parseJson(body)),
-            requestId,
-          );
-        case "POST renegotiate":
-          return rpcResponse(
-            await stub.renegotiate(context, parseJson(body)),
-            requestId,
-          );
-        case "POST leave":
-          return rpcResponse(await stub.leave(context), requestId);
-        case "POST terminate":
-          return rpcResponse(await stub.terminate(context), requestId);
-        default:
-          throw new RequestError(
-            404,
-            "route_not_found",
-            "The room operation does not exist.",
-          );
-      }
-    } catch (error) {
-      return errorResponse(error, requestId);
-    }
-  },
-} satisfies ExportedHandler<WorkerEnv>;
-
-function socketHeaders(request: Request): Headers {
-  const headers = new Headers({ upgrade: "websocket" });
-  const protocol = request.headers.get("sec-websocket-protocol");
-  if (protocol) headers.set("sec-websocket-protocol", protocol);
-  return headers;
-}
-
-async function readBody(request: Request): Promise<ArrayBuffer> {
-  const contentLength = Number(request.headers.get("content-length") ?? 0);
-  if (contentLength > MAX_BODY_BYTES) {
-    throw new RequestError(
-      413,
-      "body_too_large",
-      "The request body is too large.",
-    );
-  }
-  const body = await request.arrayBuffer();
-  if (body.byteLength > MAX_BODY_BYTES) {
-    throw new RequestError(
-      413,
-      "body_too_large",
-      "The request body is too large.",
-    );
-  }
-  return body;
-}
-
-function parseJson(body: ArrayBuffer | undefined): unknown {
-  try {
-    return JSON.parse(new TextDecoder().decode(body));
-  } catch {
-    throw new RequestError(400, "json_invalid", "Send a valid JSON request.");
-  }
-}
-
-function rpcResponse<T>(
-  result: RoomRpcResult<T>,
-  requestId: string,
-  status = 200,
-): Response {
-  if (result.type === "error") {
-    return json(
-      {
-        error: {
-          code: result.error.code,
-          message: result.error.message,
-          requestId,
-          retryable: result.error.retryable,
-        },
-      } satisfies ApiErrorBody,
-      result.error.status,
-      requestId,
-    );
-  }
-  return json(result.value, status, requestId);
-}
-
-function json(body: unknown, status: number, requestId: string): Response {
-  return Response.json(body, {
-    headers: {
-      "cache-control": "no-store",
-      "x-request-id": requestId,
+      const parsed = schema.safeParse(normalize(value, c));
+      if (!parsed.success) throw invalidRequest(parsed.error, c.req.path);
+      c.req.addValidatedData("json", parsed.data);
+      await next();
     },
-    status,
-  });
+  );
+}
+
+function withDisplayHint(value: unknown, c: Context<RoomEnv>): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const body = value as Record<string, unknown>;
+  return {
+    ...body,
+    displayName: body.displayName ?? c.get("rpc").principal.displayHint,
+  };
+}
+
+function invalidRequest(error: z.ZodError, path: string): RequestError {
+  const issue = error.issues[0];
+  const field = issue?.path[0];
+  if (field === undefined)
+    return new RequestError(400, "body_invalid", "Send a JSON object.");
+  if (field === "generation")
+    return new RequestError(
+      400,
+      "generation_invalid",
+      "A positive media generation is required.",
+    );
+  if (field === "sessionDescription") {
+    return path.endsWith("/publish")
+      ? new RequestError(
+          400,
+          "offer_invalid",
+          "Publishing requires a valid SDP offer.",
+        )
+      : new RequestError(
+          400,
+          "answer_invalid",
+          "Renegotiation requires a valid SDP answer.",
+        );
+  }
+  if (field === "tracks" && issue?.path[2] !== "mid") {
+    return new RequestError(
+      400,
+      "publish_tracks_invalid",
+      "Publish one audio track, one video track, or both.",
+    );
+  }
+  if (field === "trackKeys" && issue?.path.length === 1) {
+    return new RequestError(400, "body_invalid", "trackKeys must be an array.");
+  }
+  return new RequestError(
+    400,
+    "input_invalid",
+    "A request field is missing or invalid.",
+  );
+}
+
+function bodyTooLarge(): RequestError {
+  return new RequestError(
+    413,
+    "body_too_large",
+    "The request body is too large.",
+  );
+}
+
+function routeNotFound(): RequestError {
+  return new RequestError(
+    404,
+    "route_not_found",
+    "The room operation does not exist.",
+  );
 }

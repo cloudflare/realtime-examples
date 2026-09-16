@@ -1,8 +1,13 @@
 import {
+  type JoinRequest,
   type JoinResponse,
+  type PublishRequest,
   type PublishResponse,
+  type ReconnectRequest,
+  type RenegotiateRequest,
   type RoomSnapshot,
   type SocketTicketResponse,
+  type SubscribeRequest,
   type SubscriptionResponse,
 } from "../shared/protocol";
 import { RequestError } from "./auth";
@@ -14,20 +19,13 @@ import {
 import { KeyedLifecycleQueue } from "./lifecycle-queue";
 import { RoomMedia } from "./room-media";
 import {
-  MUTATION_ID,
-  boundedString,
   emptyRoom,
-  objectBody,
   publicTrack,
   sessionState,
   type Participant,
   type PersistedRoom,
   type RoomPhase,
 } from "./room-state";
-import { SessionQueueError } from "./session-mutation-queue";
-
-const DISPLAY_NAME = /^[\p{L}\p{N}][\p{L}\p{N} ._'-]{0,47}$/u;
-const CLIENT_ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{7,95}$/;
 const TOMBSTONE_MS = 5 * 60_000;
 const SOCKET_TICKET_TTL_MS = 30_000;
 const ROOM_LIFECYCLE_KEY = "room";
@@ -111,20 +109,8 @@ export class RoomCoordinator {
 
   async join(
     principal: Principal,
-    input: unknown,
+    { clientId, displayName, memberToken }: JoinRequest,
   ): Promise<JoinResponse> {
-    const body = objectBody(input);
-    const clientId = boundedString(body.clientId, "clientId", CLIENT_ID);
-    const displayName = boundedString(
-      body.displayName ?? principal.displayHint,
-      "displayName",
-      DISPLAY_NAME,
-    );
-    const memberToken = boundedString(
-      body.memberToken,
-      "memberToken",
-      SOCKET_TICKET,
-    );
     const memberTokenHash = await tokenHash(memberToken);
     return this.lifecycle.run(
       ROOM_LIFECYCLE_KEY,
@@ -183,20 +169,8 @@ export class RoomCoordinator {
   async reconnect(
     principal: Principal,
     memberToken: string | null,
-    input: unknown,
+    { clientId, displayName, requestId }: ReconnectRequest,
   ): Promise<JoinResponse> {
-    const body = objectBody(input);
-    const clientId = boundedString(body.clientId, "clientId", CLIENT_ID);
-    const requestId = boundedString(
-      body.requestId,
-      "requestId",
-      MUTATION_ID,
-    );
-    const displayName = boundedString(
-      body.displayName ?? principal.displayHint,
-      "displayName",
-      DISPLAY_NAME,
-    );
     const participant = await this.authorize(principal, memberToken);
     if (participant.clientId !== clientId) {
       throw new RequestError(
@@ -221,31 +195,20 @@ export class RoomCoordinator {
             participant.producer.generation,
             participant.consumer.generation,
           ) + 1;
-        const lifecycleVersion = participant.lifecycleVersion;
         const [producerId, consumerId] = await Promise.all([
           this.sfu.createSession(),
           this.sfu.createSession(),
         ]);
         this.assertRoomOpen();
-        if (participant.lifecycleVersion !== lifecycleVersion) {
-          throw new SessionQueueError(
-            "participant_lifecycle_changed",
-            "The participant lifecycle changed during reconnect. Retry.",
-          );
-        }
         participant.producer = sessionState(producerId, generation);
         participant.consumer = sessionState(consumerId, generation);
         participant.displayName = displayName;
         participant.completedReconnectRequestIds = [
-          ...participant.completedReconnectRequestIds.filter(
-            (completedId) => completedId !== requestId,
-          ),
+          ...participant.completedReconnectRequestIds,
           requestId,
         ].slice(-RECONNECT_REQUEST_HISTORY_CAPACITY);
         participant.lastSeenAt = this.now();
         participant.lifecycleVersion += 1;
-        participant.published = [];
-        participant.subscriptions = [];
         await this.changed();
         return this.joinResponse(participant, memberToken!);
       },
@@ -299,11 +262,7 @@ export class RoomCoordinator {
     const participant = await this.authorize(principal, memberToken);
     const now = this.now();
     this.pruneSocketTickets(now);
-    for (const [hash, ticket] of Object.entries(this.room.socketTickets)) {
-      if (ticket.participantId === participant.id) {
-        delete this.room.socketTickets[hash];
-      }
-    }
+    this.revokeSocketTickets(participant.id);
     const ticket = this.randomToken();
     if (!SOCKET_TICKET.test(ticket)) {
       throw new Error("Notification ticket generation violated its invariant.");
@@ -358,7 +317,7 @@ export class RoomCoordinator {
   async publish(
     principal: Principal,
     memberToken: string | null,
-    input: unknown,
+    input: PublishRequest,
   ): Promise<PublishResponse> {
     const participant = await this.authorize(principal, memberToken);
     return this.media.publish(participant, input);
@@ -367,7 +326,7 @@ export class RoomCoordinator {
   async subscribe(
     principal: Principal,
     memberToken: string | null,
-    input: unknown,
+    input: SubscribeRequest,
   ): Promise<SubscriptionResponse> {
     const participant = await this.authorize(principal, memberToken);
     return this.media.subscribe(participant, input);
@@ -376,7 +335,7 @@ export class RoomCoordinator {
   async renegotiate(
     principal: Principal,
     memberToken: string | null,
-    input: unknown,
+    input: RenegotiateRequest,
   ): Promise<void> {
     const participant = await this.authorize(principal, memberToken);
     await this.media.renegotiate(participant, input);
@@ -477,8 +436,7 @@ export class RoomCoordinator {
           async () => {
             if (
               participant.status !== "left" ||
-              participant.leftAt !== observedLeftAt ||
-              now - observedLeftAt < TOMBSTONE_MS
+              participant.leftAt !== observedLeftAt
             ) {
               return false;
             }
@@ -647,13 +605,17 @@ export class RoomCoordinator {
     participant.producer.invalid = true;
     participant.consumer.invalid = true;
     participant.consumer.pendingNegotiation = undefined;
+    this.revokeSocketTickets(participant.id);
+    this.media.dropQueues(participant.id);
+    if (closeSocket) this.closeParticipantSockets?.(participant.id);
+  }
+
+  private revokeSocketTickets(participantId: string): void {
     for (const [hash, ticket] of Object.entries(this.room.socketTickets)) {
-      if (ticket.participantId === participant.id) {
+      if (ticket.participantId === participantId) {
         delete this.room.socketTickets[hash];
       }
     }
-    this.media.dropQueues(participant.id);
-    if (closeSocket) this.closeParticipantSockets?.(participant.id);
   }
 
   private deletionLease(now: number): RoomDeletionLease | null {

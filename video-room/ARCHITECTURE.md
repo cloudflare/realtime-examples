@@ -3,259 +3,211 @@
 ![Video room architecture](architecture.svg)
 
 The editable diagram source is [architecture.mmd](architecture.mmd). Regenerate
-the SVG with:
+it with `npm run diagram`.
 
-```sh
-npm run diagram
-```
+Each room has one Durable Object. Media flows between browsers and Realtime
+SFU; the application backend coordinates membership and the tracks to receive.
 
-This is the canonical Realtime composition for one Durable Object per room plus
-WebSocket Hibernation. The Durable Object owns state and coordination, uses
-`acceptWebSocket()` with bounded serialized participant attachments, and finds
-sockets through `getWebSockets()`. Sockets carry revision notifications only;
-the browser-facing API remains authoritative HTTP for snapshots, SDP,
-authorization, mutations, and cleanup. Behind that API, the Worker uses typed
-Durable Object RPC for ordinary room operations and `fetch()` only for the
-WebSocket upgrade.
+| Component | Responsibility |
+| --- | --- |
+| Browser | Capture and receive media, apply SDP, and present room state |
+| Worker | Authenticate HTTP requests, validate input, and call typed room operations |
+| Durable Object | Authorize operations and own membership, discovery, session state, and cleanup |
+| Realtime SFU | Receive published tracks and forward requested tracks |
 
 ## Trust boundaries
 
-The browser receives only application membership capabilities, short-lived
-notification tickets, public room state, SDP, and media locators. The Realtime
-SFU application ID and bearer token are Worker bindings and are used only by
-the Durable Object's server-side SFU client.
+Cloudflare Access JWT verification supplies the deployed application identity.
+Local development uses an explicit identity that is accepted only on loopback
+hosts. Room names, participant IDs, SFU session IDs, track names, and mids are
+locators; authorization also requires the application principal and membership
+capability. SFU credentials remain in the Durable Object's server-side client.
 
-Cloudflare Access JWT verification is the deployed authentication seam.
-Localhost uses a separate explicit development identity path that rejects
-non-local hosts. The browser creates a random join/member capability before its
-first request and reuses it for identical retries; only its SHA-256 hash is
-stored in the Durable Object.
+The browser creates a random member capability before joining and sends it in
+the initial JSON body. Later requests use `x-room-member-token`. The Durable
+Object stores only its SHA-256 hash; the browser keeps the capability in
+per-tab `sessionStorage`.
 
-Room names, participant IDs, SFU session IDs, track names, mids, and URLs are
-locators rather than authorization.
+Hono routes requests in the Worker, which authenticates the caller, bounds and
+decodes the body, resolves principal-dependent defaults, and validates with
+Zod. [Shared schemas](src/shared/protocol.ts) define request and response types.
+The Durable Object receives typed commands and checks membership, creator
+rights, room state, and current sessions, including after queued work and
+external calls. Valid request shape does not grant authorization.
 
-The initial join sends the browser-generated member token in its validated JSON
-body. Later authorized HTTP requests send it in the
-`x-room-member-token` header. An authenticated endpoint exchanges it for a
-random 30-second, single-use WebSocket ticket tied to that participant. The
-ticket is consumed from `Sec-WebSocket-Protocol`, not a URL.
+Ordinary Worker-to-Durable Object calls use RPC. Expected application failures
+return `{ type: "error", error }`; success returns `{ type: "ok", value }`.
+The Worker maps these to HTTP responses. Unexpected runtime or invariant
+failures remain thrown exceptions; a later request obtains a fresh stub.
+Only the notification WebSocket upgrade uses the stub's `fetch()` method.
+The browser validates HTTP responses before using them; malformed responses
+produce bounded errors without automatic retries.
 
 ## Media direction
 
 Each participant owns two independent browser/SFU session pairs:
 
-- The producer `RTCPeerConnection` is send-only and publishes local audio and
-  video to one Realtime SFU session.
-- The consumer `RTCPeerConnection` is receive-only in practice and pulls all
-  remote tracks through a second Realtime SFU session.
+- The producer PeerConnection publishes local audio and video.
+- The consumer PeerConnection receives the other participants' tracks.
 
-A single bidirectional `RTCPeerConnection` and Realtime SFU session can publish
-and subscribe. This blueprint uses separate sessions so each media direction
-and its negotiation queue are easier to inspect independently. An adaptation
-that uses one session must serialize both publish and subscribe changes through
-that session's shared offer/answer lifecycle.
+The **media generation** identifies the current session pair. The Durable
+Object increments it when replacing both sessions; browser media requests must
+include the returned generation.
+
+A single bidirectional PeerConnection is also valid when publish and subscribe
+share one serialized offer/answer lifecycle. This example uses separate
+sessions so each direction has its own negotiation queue.
 
 ## Signaling and state flow
 
-1. The Worker authenticates the request, obtains the room's named Durable Object
-   stub, and calls the operation's typed RPC method.
-2. Join creates separate producer and consumer SFU sessions and stores a room
-   membership record. The RPC method returns a tagged result that the Worker
-   maps to the public HTTP response.
-3. The browser creates a producer offer. The Durable Object calls
-   `tracks/new` with server-held credentials and returns the SFU answer.
-4. Published track names and kinds become Durable Object track-discovery
-   state.
-5. A browser opens a hibernating notification WebSocket. This upgrade is the
-   only Worker-to-Durable Object path that uses `fetch()`. Socket open and
-   `room-changed` revision messages trigger an authorized HTTP snapshot; a
-   periodic 15-second HTTP poll provides a separate convergence check.
-6. The browser submits the exact set of remote track keys it wants over HTTP.
-7. The Durable Object maps those keys to producer session IDs and track names,
-   then calls `tracks/new` on the participant's consumer session.
-8. When the SFU returns an offer with
-   `requiresImmediateRenegotiation=true`, the browser applies it, creates an
-   answer, and sends that answer to the Durable Object's `/renegotiate`
-   operation.
+1. After acquiring local media, the browser joins the room. The Durable Object
+   creates membership plus producer and consumer SFU sessions. The browser
+   validates the response and saves confirmed membership immediately.
+2. The browser creates a producer offer and sends it through `/publish`. The
+   backend calls SFU `tracks/new`, stores successful publications in discovery
+   state, and returns the answer for the browser to apply.
+3. The browser sends its desired remote track keys through `/subscribe`. The
+   backend resolves them to publisher session IDs and track names and calls
+   `tracks/new` on the consumer session. If the response requires immediate
+   renegotiation, the browser applies the offer, creates an answer, and sends
+   it through `/renegotiate`.
+4. Once publishing and initial subscription setup succeed, the browser shows
+   the connected room. The first participant can have an empty subscription
+   set. Later snapshots feed new discovery updates into the consumer queue.
 
-The Durable Object is the application source of truth for active membership,
-display names, creator authority, published tracks, and consumer subscriptions.
-The SFU is the media-session source of truth.
-
-Expected validation, authorization, queue, and sanitized SFU failures become
-plain `{ type: "error", error }` RPC results; successful operations return
-`{ type: "ok", value }`. The Worker translates both into the existing HTTP
-contract. Thrown RPC exceptions are reserved for unexpected runtime or
-invariant failures. The Worker does not retry them or reuse that stub; a later
-request obtains a fresh named stub.
+Membership confirmation precedes media readiness. A later publish or subscribe
+failure leaves confirmed membership available for [recovery](#reconnect).
+The browser must not create another membership merely because media setup
+failed.
 
 ## Notification WebSocket
 
-The WebSocket is notification-only. Its complete server payload is:
+The socket announces revisions with this payload:
 
 ```json
 {"type":"room-changed","revision":12}
 ```
 
-Snapshots, SDP, track locators, publication, subscription, renegotiation,
-leave, termination, authorization, and mutation queues remain on the existing
-browser-facing HTTP APIs. The Worker maps those requests to typed Durable Object
-RPC; only this WebSocket upgrade uses the stub's `fetch()` method.
+On socket open or a revision message, the browser fetches an authorized HTTP
+snapshot. A 15-second safety poll covers missed notifications. SDP, media
+locators, and mutations stay on HTTP.
 
-The Durable Object accepts sockets with
-`DurableObjectState.acceptWebSocket()`. It stores only bounded
-`{participantId}` metadata with `serializeAttachment()`, restores that metadata
-with `deserializeAttachment()`, and broadcasts revisions by iterating
-`getWebSockets()`. There is no in-memory socket registry, so connections remain
-usable across hibernation.
+An authenticated `/socket-ticket` request issues a 30-second, single-use ticket.
+The browser sends it through `Sec-WebSocket-Protocol`, never a URL. The Durable
+Object consumes its stored hash and expiry, and a newer socket replaces the
+participant's previous one. Reconnection uses bounded backoff and a fresh
+ticket for each attempt.
 
-Ticket hashes and expiry remain in Durable Object storage until consumed or
-pruned. A ticket can open one socket only, and a newer socket replaces the
-participant's previous notification socket using `getWebSockets()` attachment
-matching. Client reconnect uses bounded exponential backoff, requests a new
-ticket for each attempt, and immediately resyncs over HTTP after the socket
-opens.
-
-Socket close or error never removes room presence. Heartbeats and the existing
-45-second stale cleanup remain authoritative.
+Sockets use `acceptWebSocket()` and bounded `{participantId}` attachments via
+`serializeAttachment()`. Broadcast and targeted closure restore attachments
+with `deserializeAttachment()` and find sockets through `getWebSockets()`, so
+the connection list survives hibernation. Socket close or error does not remove
+presence; [heartbeat expiry and cleanup](#cleanup) own that decision.
 
 ## SDP serialization
 
-Every producer and consumer SFU session has its own FIFO mutation queue.
-An operation that returns an immediate SFU offer sends that offer to the
-browser but keeps the queue locked. Later add, close, leave, or reconnect work
-waits until the matching browser answer succeeds through the SFU
-`/renegotiate` endpoint.
+Every SFU session has a FIFO mutation queue. A response containing an immediate
+SFU offer keeps that queue locked until the matching browser answer succeeds
+through `/renegotiate`. Later track mutations and normal Leave wait behind
+that exchange. [Forced cleanup](#cleanup) invalidates the pending exchange and
+drains active SFU calls.
 
-The browser also serializes every operation per `RTCPeerConnection`. A queued
-subscription owns the full cycle from `setRemoteDescription` through
-`setLocalDescription` and the server renegotiation acknowledgment. Retryable
-requests reuse the same mutation ID and SDP phase; work arriving while
-signaling is unstable remains queued rather than being discarded.
+The browser also serializes operations per PeerConnection. A subscription owns
+the full cycle from applying the remote offer through applying its local answer
+and receiving renegotiation acknowledgment. Retrying the same operation reuses
+its mutation ID and prepared SDP; work arriving while signaling is unstable
+remains queued.
 
-SFU retryability follows HTTP and application semantics rather than provider
-error-code names. Network failures, request timeouts, HTTP 429, and HTTP 5xx
-responses are retryable; ordinary HTTP 4xx responses are not. An error embedded
-in an otherwise successful SFU response has no HTTP status, so the application
-maps it to a generic retryable upstream failure. Provider error descriptions
-are never returned to the browser.
+Every media request must match the current generation. Checks after external
+calls also prevent an old session's completion from changing replacement state.
+If an answer is missing for 15 seconds, the session becomes invalid and queued
+work receives a reconnect-required error.
 
-Leave synchronously appends its cleanup operation and seals each queue, so
-existing work and required renegotiation can finish but no later mutation can
-enter behind cleanup. Forced cleanup invalidates new work, waits for the active
-SFU request to settle, records any returned mids, then closes the complete mid
-set. An active stale-generation result cannot publish presence or track state.
-
-Join/reconnect/leave/stale/termination lifecycles are serialized per browser or
-participant. Identical joins reuse the browser capability, identical reconnects
-reuse a persisted request ID, and every publish/subscribe/renegotiate request is
-rejected unless its media generation matches the current sessions.
-
-If an answer does not arrive within 15 seconds, the session is marked invalid
-and waiting requests receive a retryable reconnect error. Abandoned cleanup
-then force-closes known mids and creates replacement sessions.
+The SFU client waits up to ten seconds for response headers; reading the body
+is outside that timeout. It classifies network failures, timeouts, HTTP 429,
+and HTTP 5xx as retryable. An error embedded in a successful HTTP response
+becomes a generic retryable upstream failure. Actual HTTP status determines
+retryability; provider descriptions are not returned to the browser. Resource
+handling for partial results is described in
+[Cleanup](#cleanup).
 
 ## Identifier ownership
 
-- The application URL selects the bounded room name.
-- The browser creates a tab-scoped client ID, random member capability,
-  reconnect request IDs, mutation IDs, media-generation assertions, and SDP.
-- The Durable Object creates participant IDs, track names, creator authority,
-  and room revisions, and stores capability hashes.
+- The application URL selects the room name.
+- The browser creates its tab's client ID, member capability, reconnect request
+  IDs, mutation IDs, and SDP.
+- The Durable Object creates participant IDs, media generations, track names,
+  creator authority, and room revisions, and stores capability hashes.
 - Realtime SFU returns session IDs and assigns or confirms transceiver mids.
+
+`x-request-id` uses `Cf-Ray` when available and a UUID locally. It correlates one
+HTTP request with diagnostics. The reconnect body's `requestId` and media
+`mutationId` identify logical operations and stay stable across their retries.
 
 ## Reconnect
 
-A browser refresh retains its client ID, member token, display name, and joined
-intent in tab-scoped `sessionStorage`. It calls `/reconnect`, and the Durable
-Object:
+The tab retains its client ID, member token, display name, and joined intent in
+`sessionStorage`. Refresh or connection failure calls `/reconnect`. The Durable
+Object authorizes the same membership, closes known mids, replaces both SFU
+sessions, and returns the same participant ID with a new media generation. The
+browser then republishes and rebuilds its remote subscriptions.
 
-1. Authenticates the same application principal and member token.
-2. Closes known producer and consumer mids idempotently.
-3. Replaces both SFU sessions and increments the media generation.
-4. Reuses the participant ID instead of adding another presence record.
-5. Lets the browser republish and rebuild exact remote subscriptions.
+If initial media setup fails after membership was confirmed, retrying Join or
+refreshing uses that saved membership to replace the sessions. If the backend
+reports that membership is no longer valid, the browser falls back to joining.
 
-The reconnect request ID makes concurrent or repeated identical reconnects
-return the same replacement generation. A late request carrying the old
-generation is rejected before it can mutate the replacement session.
+The setup loop makes at most three attempts for errors marked retryable. Within
+that loop, an unconfirmed join reuses its pending capability, and an
+unconfirmed reconnect reuses its request ID. Once a replacement is confirmed,
+a later media failure requires a new reconnect operation and request ID. This
+separates retrying a request from replacing a session pair.
 
-An ICE/PeerConnection failure follows the same bounded replacement path.
-Reconnect is single-flight: the first trigger stops polling and heartbeat
-timers before waiting for queued SDP work, and later triggers reuse that same
-replacement operation.
+One lifecycle transition owns the browser's current room state. Reconnect
+pauses background polling and heartbeats while replacing media; a later Leave
+or Terminate supersedes it. Delayed completions cannot restore a departed room.
 
-Cloudflare documents a 30-second reuse window for sessions and tracks after
-connectivity loss, and garbage-collects a track after 30 seconds without media
-packets. This blueprint does not treat either timeout as cleanup confirmation:
-reconnect creates replacement sessions, while application state remains until
-explicit cleanup converges.
+React renders snapshots from `room-controller.ts` and invokes its actions.
+Page startup resumes saved membership once, outside component effects. Video
+components attach or detach streams; the controller owns when tracks stop.
 
 ## Cleanup
 
-Explicit Leave waits for queued SDP work, force-closes known producer and
-consumer mids, removes published/discovered tracks, and marks the membership
-left. Repeated Leave returns the same converged state during the five-minute
-tombstone window.
+Leave appends cleanup to each session queue and seals it against later
+mutations. Forced cleanup for reconnect, termination, or expiry invalidates
+new work and drains active SFU calls before closing known mids. Membership is
+marked left only after cleanup succeeds.
 
-Track-close responses may be partially successful. The application retains
-the complete mid set for retry. Per-track errors returned under HTTP 200 do not
-carry an HTTP status. The externally returned already-absent item result is
-accepted so repeated cleanup can converge; every other per-track error remains
-a generic retryable upstream failure. An actual HTTP 404 or 410 from the close
-request is also treated as already absent.
+The backend retains usable requested/returned mids before rejecting a partial
+or malformed SFU track response. Track closure accepts an actual HTTP 404 or
+410 and the public already-absent item result; other errors retain the mid set
+for another cleanup attempt. Empty room storage is deleted after cleanup and
+tombstone expiry.
 
-Browser Leave and Terminate clear local media, membership tokens, and room UI
-only after the server confirms cleanup. On failure, the existing room state and
-timers remain available so the user can retry.
+The browser closes its PeerConnections during Leave or Terminate, but keeps
+membership, local capture, and room UI until the server confirms cleanup.
+Failure leaves that state available to retry; success stops capture and returns
+to the lobby.
 
-The first successful participant is the room creator. Termination authority
-does not transfer when that participant leaves or expires. Only the creator's
-membership capability can terminate the room; termination force-closes every
-participant and is idempotent.
+The first successful participant remains the room creator even after leaving
+or expiring. Only that membership can terminate the room. Other participants
+retain authorized access to the terminal snapshot during the five-minute
+tombstone window, so they can observe termination and clear local state.
 
-Heartbeats run every ten seconds. A Durable Object alarm removes presence and
-force-closes known mids after 45 seconds without a heartbeat. It attempts both
-producer and consumer closes; any failure is propagated and the participant
-remains active for a later idempotent retry. Empty room state is deleted only
-after successful cleanup and tombstone expiry.
-
-If an alarm cleanup attempt fails, the handler preserves the error and
-durably schedules another attempt at least five seconds later. Leaving,
-expiring, or terminating a participant closes that participant's hibernating
-notification sockets by restored attachment; socket close itself never changes
-presence.
-
-After room termination, left membership tombstones remain authorized for the
-terminal snapshot during the five-minute cleanup window. This lets every peer
-observe `terminated=true` and clear local state even though active presence is
-already empty.
+Heartbeats run every ten seconds. Inactive participants become eligible for
+alarm cleanup after 45 seconds by default. Failed closes keep presence and
+schedule another alarm at least five seconds later. Successful departure
+closes the participant's notification sockets.
 
 ## Failure modes
 
-- Authentication or authorization failures appear before any SFU request.
-- Invalid input returns a stable application error code and request ID.
-- SFU transport/API failures return a bounded description without credentials.
-- SFU HTTP requests abort after ten seconds and return a retryable timeout.
-- Notification ticket expiry/reuse rejects the upgrade; the browser requests a
-  fresh ticket with bounded backoff.
-- The periodic 15-second authorized HTTP poll covers missed notifications.
-- Missing renegotiation answers trigger a reconnect-required state.
-- A failed or disconnected PeerConnection produces a visible reconnect status.
-- Room setup retries a transient reconnect/publish/subscribe failure up to
-  three times and restores notification, safety-poll, and heartbeat loops.
-- Camera/microphone denial leaves the browser in the lobby with a corrective
-  message.
+The status message reports the failure and request ID when available; API
+error responses also include an application code. Inspect the first failed
+operation: a later lifecycle error can follow an earlier setup failure. See
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md) for recovery and diagnostic steps.
 
 ## Capability status
 
-Supported in this blueprint: direct room URLs, explicit identity/lobby,
-multi-participant audio/video publish and subscribe, named tiles, reconnect,
-creator termination, leave convergence, and stale cleanup.
-
-Experimental: notification delivery, Access integration, automated live
-validation, and room-scale behavior.
-
-Unavailable: data channels, chat, recording, end-to-end encryption, screen
-sharing, AI features, moderation, device switching, simulcast controls, and
-advanced layouts.
+This experimental example implements multi-participant audio/video, room
+membership and discovery, reconnect, creator termination, and cleanup. See the
+[README limitations](README.md#known-limitations) for omitted features and
+[PRODUCTION.md](PRODUCTION.md) for deployment policies and controls.

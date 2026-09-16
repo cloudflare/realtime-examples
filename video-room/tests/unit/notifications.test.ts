@@ -6,12 +6,7 @@ import {
   ROOM_SOCKET_TICKET_PREFIX,
 } from "../../src/shared/protocol";
 import {
-  SAFETY_POLL_INTERVAL_MS,
-  SafetyPoller,
-} from "../../src/client/safety-poller";
-import {
-  RoomNotifications,
-  parseRoomChangedNotification,
+  startRoomNotifications,
 } from "../../src/client/notifications";
 import {
   restoreSocketAttachment,
@@ -61,7 +56,7 @@ test("notification socket reconnects with backoff and resyncs on open/message", 
   const timers: Array<{ callback: () => void; delay: number }> = [];
   let issueCount = 0;
   let resyncs = 0;
-  const notifications = new RoomNotifications(
+  const stop = startRoomNotifications(
     {
       issueSocketTicket: async () => ({
         expiresAt: Date.now() + 30_000,
@@ -87,7 +82,6 @@ test("notification socket reconnects with backoff and resyncs on open/message", 
     },
   );
 
-  notifications.start();
   await flush();
   assert.equal(sockets.length, 1);
   assert.equal(sockets[0]?.url.includes(TICKET_A), false);
@@ -98,6 +92,8 @@ test("notification socket reconnects with backoff and resyncs on open/message", 
 
   sockets[0]?.emitOpen();
   assert.equal(resyncs, 1);
+  sockets[0]?.emitMessage("x".repeat(257));
+  sockets[0]?.emitMessage("not JSON");
   sockets[0]?.emitMessage(JSON.stringify({ type: "ignored", revision: 1 }));
   assert.equal(resyncs, 1);
   sockets[0]?.emitMessage(
@@ -113,53 +109,49 @@ test("notification socket reconnects with backoff and resyncs on open/message", 
   assert.equal(sockets.length, 2);
   sockets[1]?.emitOpen();
   assert.equal(resyncs, 4);
-  notifications.stop();
+  sockets[0]?.emitOpen();
+  sockets[0]?.emitMessage(JSON.stringify({ type: "room-changed", revision: 9 }));
+  sockets[0]?.emitClose();
+  assert.equal(resyncs, 4);
+  assert.equal(timers.length, 1);
+  stop();
+  stop();
+  sockets[1]?.emitOpen();
+  sockets[1]?.emitClose();
+  assert.equal(resyncs, 4);
+  assert.equal(sockets[1]?.closes, 1);
+  timers[0]?.callback();
+  await flush();
+  assert.equal(issueCount, 2);
 });
 
-test("periodic safety polling runs every fifteen seconds and can stop", () => {
-  let callback: (() => void) | undefined;
-  let delay = 0;
-  let canceled = false;
-  let polls = 0;
-  const poller = new SafetyPoller(
-    () => {
-      polls += 1;
-    },
-    SAFETY_POLL_INTERVAL_MS,
-    (scheduled, milliseconds) => {
-      callback = scheduled;
-      delay = milliseconds;
-      return "timer";
-    },
-    (handle) => {
-      assert.equal(handle, "timer");
-      canceled = true;
-    },
+test("stopping notifications aborts the pending ticket and ignores its late result", async () => {
+  let releaseTicket!: (ticket: { ticket: string; expiresAt: number }) => void;
+  let requestSignal: AbortSignal | undefined;
+  const pendingTicket = new Promise<{ ticket: string; expiresAt: number }>(
+    (resolve) => { releaseTicket = resolve; },
   );
-
-  poller.start();
-  poller.start();
-  assert.equal(delay, 15_000);
-  callback?.();
-  assert.equal(polls, 1);
-  poller.stop();
-  assert.equal(canceled, true);
-});
-
-test("notification parser rejects oversized and malformed messages", () => {
-  assert.deepEqual(
-    parseRoomChangedNotification(
-      JSON.stringify({ type: "room-changed", revision: 3 }),
-    ),
-    { type: "room-changed", revision: 3 },
-  );
-  assert.equal(parseRoomChangedNotification("x".repeat(257)), undefined);
-  assert.equal(
-    parseRoomChangedNotification(
-      JSON.stringify({ type: "room-changed", revision: -1 }),
-    ),
-    undefined,
-  );
+  let connections = 0;
+  let timers = 0;
+  const stop = startRoomNotifications({
+    issueSocketTicket(signal) {
+      requestSignal = signal;
+      return pendingTicket;
+    },
+    notificationSocketUrl: () => "wss://room.example/api/rooms/demo/socket",
+  }, () => assert.fail("A stopped notification lifetime must not resync."), {
+    createSocket: (url, protocols) => {
+      connections += 1;
+      return new FakeClientSocket(url, protocols);
+    },
+    scheduleTimeout: () => { timers += 1; },
+  });
+  stop();
+  assert.equal(requestSignal?.aborted, true);
+  releaseTicket({ ticket: TICKET_A, expiresAt: Date.now() + 30_000 });
+  await flush();
+  assert.equal(connections, 0);
+  assert.equal(timers, 0);
 });
 
 class FakeClientSocket {
@@ -167,13 +159,14 @@ class FakeClientSocket {
   onerror: ((event: Event) => void) | null = null;
   onmessage: ((event: MessageEvent) => void) | null = null;
   onopen: ((event: Event) => void) | null = null;
+  closes = 0;
 
   constructor(
     readonly url: string,
     readonly protocols: string[],
   ) {}
 
-  close(): void {}
+  close(): void { this.closes += 1; }
 
   emitClose(): void {
     this.onclose?.({} as CloseEvent);

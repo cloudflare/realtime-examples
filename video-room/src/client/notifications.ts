@@ -1,6 +1,7 @@
 import {
   ROOM_SOCKET_PROTOCOL,
   ROOM_SOCKET_TICKET_PREFIX,
+  roomChangedNotificationSchema,
   type RoomChangedNotification,
 } from "../shared/protocol";
 import type { RoomApi } from "./api";
@@ -30,106 +31,81 @@ type NotificationDependencies = {
   scheduleTimeout?: ScheduleTimeout;
 };
 
-export class RoomNotifications {
-  private active = false;
-  private generation = 0;
-  private reconnectAttempt = 0;
-  private reconnectTimer?: unknown;
-  private socket?: NotificationSocket;
+export function startRoomNotifications(
+  api: Pick<RoomApi, "issueSocketTicket" | "notificationSocketUrl">,
+  resync: () => Promise<void> | void,
+  dependencies: NotificationDependencies = {},
+): () => void {
+  const controller = new AbortController();
+  const cancelTimeout =
+    dependencies.cancelTimeout ??
+    ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>));
+  const createSocket =
+    dependencies.createSocket ??
+    ((url, protocols) => new WebSocket(url, protocols));
+  const random = dependencies.random ?? Math.random;
+  const scheduleTimeout =
+    dependencies.scheduleTimeout ??
+    ((callback, milliseconds) => setTimeout(callback, milliseconds));
+  let reconnectAttempt = 0;
+  let reconnectTimer: unknown;
+  let socket: NotificationSocket | undefined;
 
-  private readonly cancelTimeout: CancelTimeout;
-  private readonly createSocket: SocketFactory;
-  private readonly random: () => number;
-  private readonly scheduleTimeout: ScheduleTimeout;
+  void connect();
 
-  constructor(
-    private readonly api: Pick<
-      RoomApi,
-      "issueSocketTicket" | "notificationSocketUrl"
-    >,
-    private readonly resync: () => Promise<void> | void,
-    dependencies: NotificationDependencies = {},
-  ) {
-    this.cancelTimeout =
-      dependencies.cancelTimeout ??
-      ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>));
-    this.createSocket =
-      dependencies.createSocket ??
-      ((url, protocols) => new WebSocket(url, protocols));
-    this.random = dependencies.random ?? Math.random;
-    this.scheduleTimeout =
-      dependencies.scheduleTimeout ??
-      ((callback, milliseconds) => setTimeout(callback, milliseconds));
-  }
+  return () => {
+    if (controller.signal.aborted) return;
+    controller.abort();
+    if (reconnectTimer !== undefined) cancelTimeout(reconnectTimer);
+    const current = socket;
+    socket = undefined;
+    current?.close(1000, "Notification client stopped.");
+  };
 
-  start(): void {
-    if (this.active) return;
-    this.active = true;
-    this.generation += 1;
-    void this.connect(this.generation);
-  }
-
-  stop(): void {
-    this.active = false;
-    this.generation += 1;
-    if (this.reconnectTimer !== undefined) {
-      this.cancelTimeout(this.reconnectTimer);
-      this.reconnectTimer = undefined;
-    }
-    const socket = this.socket;
-    this.socket = undefined;
-    socket?.close(1000, "Notification client stopped.");
-  }
-
-  private async connect(generation: number): Promise<void> {
+  async function connect(): Promise<void> {
+    if (controller.signal.aborted) return;
     try {
-      const { ticket } = await this.api.issueSocketTicket();
-      if (!this.active || generation !== this.generation) return;
-      const socket = this.createSocket(this.api.notificationSocketUrl(), [
+      const { ticket } = await api.issueSocketTicket(controller.signal);
+      if (controller.signal.aborted) return;
+      const connected = createSocket(api.notificationSocketUrl(), [
         ROOM_SOCKET_PROTOCOL,
         `${ROOM_SOCKET_TICKET_PREFIX}${ticket}`,
       ]);
-      this.socket = socket;
-      socket.onopen = () => {
-        if (this.socket !== socket || !this.active) return;
-        this.reconnectAttempt = 0;
-        void this.resync();
+      socket = connected;
+      connected.onopen = () => {
+        if (socket !== connected || controller.signal.aborted) return;
+        reconnectAttempt = 0;
+        void resync();
       };
-      socket.onmessage = (event) => {
-        if (this.socket !== socket || !this.active) return;
-        if (parseRoomChangedNotification(event.data)) void this.resync();
+      connected.onmessage = (event) => {
+        if (socket !== connected || controller.signal.aborted) return;
+        if (parseRoomChangedNotification(event.data)) void resync();
       };
-      socket.onerror = () => {
-        if (this.socket === socket) socket.close();
+      connected.onerror = () => {
+        if (socket === connected) connected.close();
       };
-      socket.onclose = () => {
-        if (this.socket !== socket) return;
-        this.socket = undefined;
-        void this.resync();
-        this.scheduleReconnect(generation);
+      connected.onclose = () => {
+        if (socket !== connected) return;
+        socket = undefined;
+        void resync();
+        scheduleReconnect();
       };
     } catch {
-      this.scheduleReconnect(generation);
+      scheduleReconnect();
     }
   }
 
-  private scheduleReconnect(generation: number): void {
-    if (
-      !this.active ||
-      generation !== this.generation ||
-      this.reconnectTimer !== undefined
-    ) {
-      return;
-    }
+  function scheduleReconnect(): void {
+    if (controller.signal.aborted || reconnectTimer !== undefined) return;
     const base = Math.min(
-      1_000 * 2 ** Math.min(this.reconnectAttempt, 4),
+      1_000 * 2 ** Math.min(reconnectAttempt, 4),
       15_000,
     );
-    this.reconnectAttempt += 1;
-    const delay = base + Math.floor(this.random() * 250);
-    this.reconnectTimer = this.scheduleTimeout(() => {
-      this.reconnectTimer = undefined;
-      void this.connect(generation);
+    reconnectAttempt += 1;
+    const delay = base + Math.floor(random() * 250);
+    reconnectTimer = scheduleTimeout(() => {
+      reconnectTimer = undefined;
+      void connect();
     }, delay);
   }
 }
@@ -139,18 +115,8 @@ export function parseRoomChangedNotification(
 ): RoomChangedNotification | undefined {
   if (typeof value !== "string" || value.length > 256) return undefined;
   try {
-    const parsed = JSON.parse(value) as Record<string, unknown>;
-    if (
-      parsed.type !== "room-changed" ||
-      !Number.isSafeInteger(parsed.revision) ||
-      (parsed.revision as number) < 0
-    ) {
-      return undefined;
-    }
-    return {
-      revision: parsed.revision as number,
-      type: "room-changed",
-    };
+    const parsed = roomChangedNotificationSchema.safeParse(JSON.parse(value));
+    return parsed.success ? parsed.data : undefined;
   } catch {
     return undefined;
   }

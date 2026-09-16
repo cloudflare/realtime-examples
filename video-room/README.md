@@ -8,7 +8,7 @@ the room.
 
 ## Run locally
 
-Use Node.js 22 or later:
+Use Node.js 22.12 or later:
 
 ```bash
 cd video-room
@@ -20,7 +20,6 @@ chmod 600 .dev.vars
 Set `REALTIME_SFU_APP_ID` and `REALTIME_SFU_BEARER_TOKEN` in `.dev.vars`, then:
 
 ```bash
-npm run check
 npm run dev
 ```
 
@@ -35,24 +34,24 @@ reuse the first participant's browser identity.
 
 ![Video room architecture](architecture.svg)
 
-Each browser uses separate producer and consumer PeerConnections. A single
-bidirectional connection is also valid when publish and subscribe operations
-share one serialized offer/answer lifecycle.
+Each browser uses separate producer and consumer PeerConnections, each with
+its own SFU session and negotiation queue.
 
-The Worker authenticates HTTP requests and calls one Durable Object per room.
-The Durable Object owns membership, authorization, track discovery, reconnect,
-and cleanup. Media flows directly between the browser and Realtime SFU, while
+The Worker uses Hono for HTTP routing and Zod to validate requests before
+calling one Durable Object per room through typed RPC. The Durable Object owns
+membership, authorization, track discovery, reconnect, and cleanup. Media flows directly between the browser and Realtime SFU, while
 SFU credentials remain in server-side bindings.
 
 A hibernating WebSocket sends only `room-changed` revisions. HTTP remains
 authoritative for snapshots, SDP, and mutations, with a 15-second safety poll.
 
-The initial join sends a browser-generated member capability in its JSON body.
-Later requests use the `x-room-member-token` header. Notification tickets are
-short-lived, single-use, and sent through `Sec-WebSocket-Protocol`, never a URL.
-
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the complete signaling and lifecycle
 design.
+
+The frontend uses React 19 and Tailwind CSS v4 through Vite. Edit
+`src/client/App.tsx` for the layout and participant tiles. React subscribes to
+`src/client/room-controller.ts`, which owns room actions and media lifetimes.
+`src/client/styles.css` holds the Tailwind import and shared focus style.
 
 ## Deploy
 
@@ -78,18 +77,23 @@ authorization, quotas, retention, or observability.
 
 ## Verify
 
+Check types, application behavior with mocked SFU responses, the production
+build, and browser assets for credentials:
+
 ```bash
 npm run check
 ```
 
-The optional live test uses two fresh Chrome pages and the real SFU path:
+With the dev server running, the optional live test uses Google Chrome, fake
+camera/microphone input, and real SFU connections:
 
 ```bash
 LIVE_VIDEO_ROOM_URL='http://localhost:8787' npm run test:live
 ```
 
-Also verify refresh, Leave and rejoin, creator termination, and audible remote
-audio. See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for failures.
+It checks two participants exchanging media, interrupted initial setup and
+refresh recovery, Leave/rejoin, and creator termination. Listen for remote
+audio manually. See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for failures.
 
 ## Clean up
 
@@ -106,12 +110,13 @@ Remove the Access application separately.
 
 ## Known limitations
 
-- A closed or crashed tab may remain visible for up to 45 seconds.
-- Camera or microphone replacement reconnects both media sessions.
+- Inactive participants become eligible for cleanup after 45 seconds by
+  default. Failed cleanup is retried.
 - Recovery after repeated reconnect setup failures may require a page reload.
 - Audible speaker output remains a manual check.
-- Simulcast, screen sharing, chat, recording, end-to-end encryption,
-  moderation, device switching, and advanced layouts are not implemented.
+- DataChannels, simulcast, screen sharing, chat, recording, end-to-end
+  encryption, moderation, device switching, and advanced layouts are not
+  implemented.
 - Rate limiting, room quotas, audit storage, and Access policy creation remain
   deployment responsibilities.
 

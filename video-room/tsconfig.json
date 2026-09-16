@@ -4,6 +4,7 @@
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
+    "jsx": "react-jsx",
     "lib": ["ES2023", "DOM"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
@@ -22,6 +23,7 @@
   "include": [
     "playwright.config.ts",
     "src/**/*.ts",
+    "src/**/*.tsx",
     "tests/**/*.ts",
     "vitest.config.ts",
     "vite.config.ts",

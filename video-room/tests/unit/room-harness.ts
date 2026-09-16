@@ -1,7 +1,7 @@
 import type { SessionDescription } from "../../src/shared/protocol";
 import {
   type SfuClient,
-  type SfuTracksResponse,
+  type SfuResponse,
 } from "../../src/server/realtime";
 import {
   RoomCoordinator,
@@ -17,15 +17,16 @@ export const CHARLIE_MEMBER_TOKEN = "c".repeat(43);
 
 export class FakeSfu implements SfuClient {
   readonly addTrackBarriers: Promise<void>[] = [];
-  readonly addResponses: SfuTracksResponse[] = [];
+  readonly addResponses: SfuResponse[] = [];
   readonly added: Array<{
     body: Record<string, unknown>;
     sessionId: string;
   }> = [];
   readonly closeErrors: unknown[] = [];
-  readonly closeResponses: SfuTracksResponse[] = [];
+  readonly closeResponses: SfuResponse[] = [];
   readonly closeTrackBarriers: Promise<void>[] = [];
   readonly closed: Array<{ mids: string[]; sessionId: string }> = [];
+  readonly createSessionBarriers: Promise<void>[] = [];
   readonly events: string[] = [];
   readonly renegotiateBarriers: Promise<void>[] = [];
   readonly renegotiated: string[] = [];
@@ -35,13 +36,14 @@ export class FakeSfu implements SfuClient {
     this.sessions += 1;
     const sessionId = `session-${this.sessions}`;
     this.events.push(`create:${sessionId}`);
+    await this.createSessionBarriers.shift();
     return sessionId;
   }
 
   async addTracks(
     sessionId: string,
     body: Record<string, unknown>,
-  ): Promise<SfuTracksResponse> {
+  ): Promise<SfuResponse> {
     this.added.push({ body, sessionId });
     await this.addTrackBarriers.shift();
     const configured = this.addResponses.shift();
@@ -75,7 +77,7 @@ export class FakeSfu implements SfuClient {
   async closeTracks(
     sessionId: string,
     mids: string[],
-  ): Promise<SfuTracksResponse> {
+  ): Promise<SfuResponse> {
     this.closed.push({ mids, sessionId });
     this.events.push(`close:${sessionId}`);
     await this.closeTrackBarriers.shift();
@@ -100,10 +102,12 @@ export function harness(
     closeParticipantSockets?: (participantId: string) => void;
     notifyRevision?: (revision: number) => void;
     now?: () => number;
+    room?: PersistedRoom;
+    sfu?: FakeSfu;
   } = {},
 ) {
-  const sfu = new FakeSfu();
-  const room = emptyRoom("demo-room");
+  const sfu = options.sfu ?? new FakeSfu();
+  const room = options.room ?? emptyRoom("demo-room");
   const persistBarriers: Promise<void>[] = [];
   const writes: PersistedRoom[] = [];
   let id = 0;

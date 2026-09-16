@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ApiError } from "../../src/client/api";
 import {
   ClientLifecycleController,
-  retryBounded,
   type ClientLifecycleTransition,
 } from "../../src/client/lifecycle";
 import { SerialMutationQueue } from "../../src/client/mutation-queue";
@@ -83,11 +81,14 @@ test("closing the browser queue rejects waiting work and drains one active task"
   const activeBlocked = new Promise<void>((resolve) => {
     releaseActive = resolve;
   });
+  const events: string[] = [];
   const active = queue.enqueue(async () => {
     await activeBlocked;
-    return "active-complete";
+    events.push("active-complete");
   });
-  const waiting = queue.enqueue(async () => "must-not-run");
+  const waiting = queue.enqueue(async () => {
+    events.push("must-not-run");
+  });
   const waitingRejected = assert.rejects(waiting, /queue closed/);
   const idle = queue.onIdle();
   let idleResolved = false;
@@ -100,8 +101,9 @@ test("closing the browser queue rejects waiting work and drains one active task"
   await Promise.resolve();
   assert.equal(idleResolved, false);
   releaseActive();
-  assert.equal(await active, "active-complete");
+  await active;
   await idle;
+  assert.deepEqual(events, ["active-complete"]);
   assert.equal(idleResolved, true);
 });
 
@@ -130,29 +132,4 @@ test("closing the browser queue prevents an active failure from retrying", async
   await rejected;
   await idle;
   assert.equal(attempts, 1);
-});
-
-test("bounded room setup retry recovers from one transient failure", async () => {
-  const attempts: number[] = [];
-  const retries: number[] = [];
-  const result = await retryBounded(
-    async (attempt) => {
-      attempts.push(attempt);
-      if (attempt === 0) {
-        throw new ApiError(
-          "sfu_request_timed_out",
-          "temporary failure",
-          true,
-        );
-      }
-      return "connected";
-    },
-    (error) => error instanceof ApiError && error.retryable,
-    async (_error, attempt) => {
-      retries.push(attempt);
-    },
-  );
-  assert.equal(result, "connected");
-  assert.deepEqual(attempts, [0, 1]);
-  assert.deepEqual(retries, [0]);
 });

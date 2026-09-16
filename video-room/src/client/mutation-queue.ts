@@ -3,10 +3,10 @@ export type RetryDecision = {
   retry: boolean;
 };
 
-type QueueItem<T> = {
+type QueueItem = {
   reject: (error: unknown) => void;
-  resolve: (value: T) => void;
-  run: () => Promise<T>;
+  resolve: () => void;
+  run: () => Promise<void>;
 };
 
 /**
@@ -19,7 +19,7 @@ export class SerialMutationQueue {
   private closeListeners = new Set<() => void>();
   private closed?: Error;
   private idleWaiters: Array<() => void> = [];
-  private waiting: QueueItem<unknown>[] = [];
+  private waiting: QueueItem[] = [];
 
   constructor(
     private readonly retryDecision: (
@@ -28,14 +28,10 @@ export class SerialMutationQueue {
     ) => RetryDecision = () => ({ delayMs: 0, retry: false }),
   ) {}
 
-  enqueue<T>(run: () => Promise<T>): Promise<T> {
+  enqueue(run: () => Promise<void>): Promise<void> {
     if (this.closed) return Promise.reject(this.closed);
-    const result = new Promise<T>((resolve, reject) => {
-      this.waiting.push({
-        reject,
-        resolve: resolve as (value: unknown) => void,
-        run,
-      });
+    const result = new Promise<void>((resolve, reject) => {
+      this.waiting.push({ reject, resolve, run });
     });
     void this.pump();
     return result;
@@ -71,7 +67,8 @@ export class SerialMutationQueue {
     try {
       for (;;) {
         try {
-          item.resolve(await item.run());
+          await item.run();
+          item.resolve();
           break;
         } catch (error) {
           if (this.closed) {

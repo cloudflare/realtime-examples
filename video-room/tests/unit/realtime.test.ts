@@ -4,9 +4,7 @@ import test from "node:test";
 import {
   RealtimeSfuClient,
   SfuRequestError,
-  isRetryableSfuStatus,
-  sanitizeErrorIdentifier,
-  sfuResponseError,
+  parseSfuTracksResponse,
 } from "../../src/server/realtime";
 
 const env = {
@@ -14,22 +12,13 @@ const env = {
   REALTIME_SFU_BEARER_TOKEN: "<test-token>",
 };
 
-test("SFU retryability follows HTTP status semantics", () => {
-  assert.equal(isRetryableSfuStatus(429), true);
-  assert.equal(isRetryableSfuStatus(500), true);
-  assert.equal(isRetryableSfuStatus(503), true);
-  assert.equal(isRetryableSfuStatus(400), false);
-  assert.equal(isRetryableSfuStatus(404), false);
-  assert.equal(isRetryableSfuStatus(406), false);
-});
-
 test("uses the actual HTTP status and a bounded provider error message", async () => {
   const client = new RealtimeSfuClient(
     env,
     async () =>
       Response.json(
         {
-          errorCode: "provider_error",
+          errorCode: "provider-error",
           errorDescription: "Raw provider detail must not reach the browser.",
         },
         { status: 429 },
@@ -39,7 +28,7 @@ test("uses the actual HTTP status and a bounded provider error message", async (
     client.addTracks("session", {}),
     (error: unknown) =>
       error instanceof SfuRequestError &&
-      error.code === "provider_error" &&
+      error.code === "sfu_upstream_error" &&
       error.status === 429 &&
       error.retryable &&
       error.message === "Realtime SFU could not complete the operation." &&
@@ -75,14 +64,18 @@ test("an error embedded in HTTP 200 becomes a generic upstream failure", async (
     async () =>
       Response.json({
         errorCode: "provider_error",
+        mid: "remote\n0",
+        trackName: "x".repeat(129),
         errorDescription: "A provider-specific internal explanation.",
       }),
   );
-  await assert.rejects(
-    client.addTracks("session", {}),
+  const response = await client.addTracks("session", {});
+  assert.throws(
+    () => parseSfuTracksResponse(response, "publish"),
     (error: unknown) =>
       error instanceof SfuRequestError &&
       error.code === "provider_error" &&
+      error.track === undefined &&
       error.status === 502 &&
       error.retryable &&
       error.message === "Realtime SFU could not complete the operation." &&
@@ -105,7 +98,7 @@ test("an unreadable HTTP error body still preserves the actual status", async ()
   );
 });
 
-test("preserves repeatable per-track close results returned under HTTP 200", async () => {
+test("forwards per-track close results returned under HTTP 200", async () => {
   const requestBodies: unknown[] = [];
   const client = new RealtimeSfuClient(env, async (_input, init) => {
     requestBodies.push(JSON.parse(String(init?.body)));
@@ -121,8 +114,7 @@ test("preserves repeatable per-track close results returned under HTTP 200", asy
     });
   });
 
-  const first = await client.closeTracks("session", ["missing-mid"]);
-  const second = await client.closeTracks("session", ["missing-mid"]);
+  const response = await client.closeTracks("session", ["missing-mid"]);
   const expected = {
     requiresImmediateRenegotiation: false,
     tracks: [
@@ -136,40 +128,8 @@ test("preserves repeatable per-track close results returned under HTTP 200", asy
 
   assert.deepEqual(requestBodies, [
     { force: true, tracks: [{ mid: "missing-mid" }] },
-    { force: true, tracks: [{ mid: "missing-mid" }] },
   ]);
-  assert.deepEqual(first, expected);
-  assert.deepEqual(second, expected);
-});
-
-test("bounds provider error identifiers before exposing them", () => {
-  assert.equal(sanitizeErrorIdentifier("provider_error"), "provider_error");
-  assert.equal(sanitizeErrorIdentifier("provider-error"), undefined);
-});
-
-test("retains only bounded public track locators for safe diagnostics", () => {
-  const error = sfuResponseError(
-    {
-      errorCode: "pull_failed",
-      mid: "remote-0",
-      trackName: "p_abc-2-video",
-    },
-    "pull failed",
-  );
-  assert.deepEqual(error.track, {
-    mid: "remote-0",
-    trackName: "p_abc-2-video",
-  });
-
-  const unsafe = sfuResponseError(
-    {
-      errorCode: "pull_failed",
-      mid: "remote\n0",
-      trackName: "x".repeat(129),
-    },
-    "pull failed",
-  );
-  assert.equal(unsafe.track, undefined);
+  assert.deepEqual(response, expected);
 });
 
 test("aborts an SFU request after the configured timeout", async () => {

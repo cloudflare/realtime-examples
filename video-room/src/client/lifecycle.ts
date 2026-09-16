@@ -7,8 +7,10 @@ export type ClientLifecycleTransition =
 
 export type LifecycleControlState = {
   displayNameDisabled: boolean;
+  joinBusy: boolean;
   joinDisabled: boolean;
   leaveDisabled: boolean;
+  roomBusy: boolean;
   terminateDisabled: boolean;
 };
 
@@ -129,32 +131,15 @@ export function lifecycleControlState(
 ): LifecycleControlState {
   const terminal =
     transition === "leave" || transition === "terminate";
+  const joining = transition === "join" || transition === "resume";
   return {
-    displayNameDisabled:
-      transition === "join" || transition === "resume",
+    displayNameDisabled: joining,
+    joinBusy: joining,
     joinDisabled: transition !== undefined,
     leaveDisabled: !hasActiveRoom || terminal,
+    roomBusy: transition === "reconnect" || terminal,
     terminateDisabled: !hasActiveRoom || terminal,
   };
-}
-
-export async function retryBounded<Result>(
-  operation: (attempt: number) => Promise<Result>,
-  shouldRetry: (error: unknown) => boolean,
-  onRetry: (error: unknown, attempt: number) => Promise<void> | void,
-  attempts = 3,
-): Promise<Result> {
-  let lastError: unknown;
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    try {
-      return await operation(attempt);
-    } catch (error) {
-      lastError = error;
-      if (attempt + 1 >= attempts || !shouldRetry(error)) throw error;
-      await onRetry(error, attempt);
-    }
-  }
-  throw lastError;
 }
 
 function isTerminal(transition: ClientLifecycleTransition): boolean {
