@@ -31,9 +31,13 @@ must use checked-in code and supported fixtures rather than local experiments.
 - Keep one PeerConnection and one SDP state machine per endpoint. Preserve
   sequential setup and answer application before the next SFU mutation. Keep
   Durable Object operations serialized across awaits, including cleanup and
-  controller permission changes. Do not drop pending setup/cleanup work.
+  controller permission changes. Do not drop pending setup/cleanup work within
+  the current generation.
 - Preserve publisher generations, boot retry identity, allocation receipts,
-  and cleanup retries. Do not erase resource state before cleanup succeeds.
+  and cleanup retries within the current generation. Replacing or expiring the
+  publisher retires that entire generation before new allocation, without
+  waiting for SFU cleanup. Retirement does not prove forwarding or reply access
+  has stopped; preserve the distinction in lifecycle guidance.
 - Keep application channels on SFU-returned IDs: ordered reliable `robot`, and
   unordered zero-retransmit `spectrum`. Preserve stream-0 bootstrap and the
   browser's `waitForAck` acknowledgment before pulling audio.

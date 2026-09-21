@@ -75,11 +75,13 @@ impose a subscriber-count limit. The admission check is application policy in
 [`RobotRoom.joinViewer()`](worker/src/server/robot-room.ts), before it requests
 an SFU session.
 
-One listener can control playback at a time. Browsers send a heartbeat every
-five seconds; a controller's successful heartbeat renews its unexpired lease
-for 15 seconds. Expiry or release revokes SFU `canReply` permission before
-another viewer can take control. Failed revocation remains pending for retry.
-Changing the UI alone does not grant reply permission.
+Within the current publisher generation, one listener can control playback at
+a time. Browsers send a heartbeat every five seconds; a controller's successful
+heartbeat renews its unexpired lease for 15 seconds. Expiry or release revokes
+SFU `canReply` permission before another viewer can take control. Failed
+revocation remains pending for retry. Changing the UI alone does not grant
+reply permission. Retiring the publisher uses the separate
+[generation cleanup policy](#cleanup-and-failure-behavior) below.
 
 ## Signaling and identifiers
 
@@ -96,9 +98,9 @@ mutation. This application has a fixed topology, not a generic renegotiation SDK
 
 | Identifier | Owner and purpose |
 | --- | --- |
-| SFU session ID, channel IDs and track mids | SFU allocations retained by the backend for use and cleanup |
+| SFU session ID, channel IDs and track mids | SFU allocations retained by the backend for use and cleanup within the current generation |
 | Publisher `bootId` | Firmware retry identity; the same ID must retain the same offer and startup metadata |
-| Publisher generation | Backend-issued identity for one device session; stale device/viewer operations are rejected |
+| Publisher generation | Backend-issued identity required by device operations after startup and viewer memberships |
 | Viewer ID and token | Backend-created membership and its secret ownership proof |
 | Playback revision | Device occurrence of a song within a generation; rejects stale metadata/spectrum |
 
@@ -109,7 +111,7 @@ SDP contains temporary transport credentials and must not be logged.
 
 Firmware retries permitted setup failures with the same request body. Fatal
 transport/signaling failures trigger one board restart with backoff; the next
-boot replaces the publisher generation after cleaning up old resources. The
+boot replaces the publisher generation using the cleanup policy below. The
 radio task owns the peer and socket throughout; HTTPS runs on its own task.
 
 A temporary browser `disconnected` state waits for WebRTC to recover. Failed
@@ -125,19 +127,34 @@ page departure also sends a best-effort leave beacon. Repeating local teardown
 is safe. A repeated leave after its record is gone may return 403; it cannot
 recreate resources. Unreachable leave requests fall back to inactivity cleanup.
 
-Alarms check controller expiry and inactive viewers/publishers, preserving the
-earliest scheduled alarm when status is polled. Viewer records become eligible
-after 45 seconds of inactivity. A publisher appears offline after 25 seconds and
-becomes eligible for cleanup after 90 seconds. The scheduling interval is 10
-seconds, and SFU errors can delay completion; these values are not completion
-guarantees.
-
+Alarms preserve the earliest scheduled check when status is polled. While the
+publisher generation remains current, they revoke expired controller leases and
+retry cleanup for closing viewers or viewers inactive for more than 45 seconds.
 Successful track/channel allocations returned beside an error are persisted as
-cleanup receipts before validation fails. Cleanup retains failed resources and
-treats HTTP 404/410 as already closed. A publisher replacement waits for old
-resources to close. SFU session expiration and account-wide cleanup are not
-audited by this example. Follow [operations](PRODUCTION.md#stop-and-clean-up)
-before removing the backend that performs retries.
+cleanup receipts before validation fails. Failed cleanup keeps those IDs for
+retry. The client accepts a per-item `close_track_error` identifying a requested
+resource on a successful close response as absence of that item. Request-level
+errors, including HTTP 404/410, remain unresolved; they do not prove all requested
+resources are closed or a controller's permission is revoked.
+
+A new boot retires the old publisher, viewers, controller state, and cleanup
+receipts before allocating its session. Retirement is persisted even if new
+allocation fails. Alarms do the same after more than 90 seconds without a device
+heartbeat; status shows the publisher offline after 25 seconds. Neither path
+contacts obsolete SFU sessions or retries their cleanup. Replacement does not
+depend on old cleanup succeeding. Alarms run at 10-second intervals; these
+application thresholds are not SFU expiry guarantees.
+
+Generation checks reject stale device operations after startup and old viewer
+memberships. Retirement does not establish that old SFU forwarding or reply
+access has stopped. Browsers
+close their old peer when status changes or membership is rejected, and a board
+restart closes its old transport. Endpoints that remain connected may still
+exchange media or replies until they close or the SFU expires the relevant
+resources. An adaptation requiring enforced revocation must retain enough
+resource state to confirm closure or permission removal before discarding it.
+This example does not audit SFU expiration or account-wide cleanup; follow
+[operations](PRODUCTION.md#stop-and-clean-up) when removing the deployment.
 
 ## Current scope
 

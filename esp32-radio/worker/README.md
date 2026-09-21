@@ -78,7 +78,13 @@ order and combines them with telemetry to produce the displayed playback state.
 
 The spectrum canvas reads the board's 25 Hz sample buffer directly, while React
 state updates at a lower frequency. See [architecture](../ARCHITECTURE.md) for
-authentication, viewer admission, controller leases, and retained cleanup state.
+authentication, viewer admission, controller leases, and cleanup policy.
+
+`RobotRoom` retires replaced or expired publisher generations independently of
+old SFU cleanup. Within the current generation, it retains allocation receipts
+and failed viewer cleanup, and revokes controller permission before handoff.
+See the [lifecycle policy](../ARCHITECTURE.md#cleanup-and-failure-behavior) for
+retry, expiry, and access-revocation boundaries.
 
 The board includes current-song metadata in its HTTPS heartbeats. The status API
 returns the last accepted metadata before a browser establishes WebRTC;

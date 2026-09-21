@@ -21,15 +21,15 @@ owner and protocol for each stage.
 | Audio connected but inaudible | Select **Enable sound** if shown, check local mute/volume and device output, then inspect receiver statistics. Shared pause sends silence; local mute does not pause the board. |
 | Spectrum or metadata looks stale | Check publisher generation and playback revision, channel receipt, and analysis freshness. Preserve the [music/protocol compatibility rules](ERRATA.md#music-pack-compatibility). |
 | Hardware meters show unavailable | Check the metrics sampler and the board build. A missing/stale sample is deliberately unavailable; it is not a zero measurement. See [hardware metrics](firmware/README.md#hardware-metrics). |
-| Take control is unavailable | Start listening, wait for channels, and check whether another viewer owns the lease. Release/expiry must revoke SFU reply permission successfully before handoff; do not bypass it in the UI. |
+| Take control is unavailable | Start listening, wait for channels, and check whether another viewer owns the lease. Within the current generation, release or lease expiry must revoke SFU reply permission before handoff; do not bypass failed revocation in the UI. |
 | All eight slots are occupied | Disconnect unused listeners. Inactivity cleanup and pending SFU cleanup can delay reuse. See the Worker's [listener policy](ARCHITECTURE.md#authorization) when adapting admission. |
 | Board restarts repeatedly | Inspect filtered USB error/status messages, Wi-Fi, signaling auth, and transport failure. Read [ERRATA](ERRATA.md) before changing crypto, task stacks, memory placement, or buffering. |
-| SFU cleanup is failing | Keep the Worker deployed and its SFU credentials valid. Failed resource receipts are retained for retry. Removing the backend does not prove those resources were closed. Follow [shutdown](PRODUCTION.md#stop-and-clean-up). |
+| SFU cleanup is failing | Check credentials and the logged operation, status, and error codes. Failed receipts remain for retry while their publisher generation is current. Follow [shutdown](PRODUCTION.md#stop-and-clean-up) before retirement ends those retries. |
 
 Use the [board monitor](firmware/README.md#backup-and-flash-details) and
 [Worker logs](PRODUCTION.md#observe-and-troubleshoot) to locate the failing
-stage. Correlate API failures with `X-Request-Id`, operation and status; keep
-SDP, bearer tokens, cookies and private firmware out of reports.
+stage. Correlate API failures with `X-Request-Id`, operation, status, and symbolic
+error codes; keep SDP, bearer tokens, cookies and private firmware out of reports.
 
 The [Worker guide](worker/README.md#worker-tests) separates portable tests,
 simulated SFU tests, fixture browser tests, and the live two-listener test.

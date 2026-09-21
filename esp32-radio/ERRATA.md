@@ -90,13 +90,19 @@ path against the SDK, and device checks validate its behavior.
 
 ## Worker session cleanup and leases
 
-The [lifecycle contract](ARCHITECTURE.md#cleanup-and-failure-behavior) covers
-404/410 cleanup and alarm ordering. Preserve both when upgrading the Worker.
+Publisher retirement follows the
+[lifecycle policy](ARCHITECTURE.md#cleanup-and-failure-behavior); old SFU cleanup
+does not block a new boot. Current-generation cleanup and controller revocation
+keep request-level failures pending, including HTTP 404/410 and top-level
+`close_track_error`. Per-item absence must identify a requested resource.
+Preserve the earliest alarm when polling status.
 
 Persisted `pendingChannels` and `pendingMids` hold successful allocations from
-partially failed SFU responses. They survive eviction until cleanup succeeds.
-Before rolling back to a version without receipt handling, close listeners and
-replace the board session under the current version, confirming cleanup first.
+partially failed SFU responses. They survive eviction within the current
+generation until cleanup succeeds or the generation is retired. Before rolling
+back to a version without receipt handling, close listeners and check cleanup
+under the current version. Follow [shutdown](PRODUCTION.md#stop-and-clean-up)
+before retirement discards those receipts.
 
 ## Music pack compatibility
 
