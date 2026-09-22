@@ -20,9 +20,11 @@ this application's protocol, not SFU API endpoints.
    SDP offer and pending transition belong to this one peer.
 2. **Ask the backend to publish.** The signaling task sends the offer, a fresh
    `bootId`, and music metadata to `/api/device/start`. The Worker authenticates
-   the device; `RobotRoom` closes the previous generation's resources and calls
-   `POST /sessions/new`, then `POST /sessions/{id}/tracks/new` with the offer and
-   `{ location: "local", mid, trackName: "music" }`.
+   the device; `RobotRoom` validates the offer and retires the previous
+   generation's application state before calling `POST /sessions/new`, then
+   `POST /sessions/{id}/tracks/new` with the offer and
+   `{ location: "local", mid, trackName: "music" }`. It does not wait for old
+   SFU cleanup; see the [cleanup policy](../../ARCHITECTURE.md#cleanup-and-failure-behavior).
 3. **Apply the answer on the peer's owner task.** The backend returns the SFU
    answer and an application generation. The signaling task validates the
    answer, sends `Request::Answer` to the radio task, and waits for its result.
@@ -43,8 +45,8 @@ this application's protocol, not SFU API endpoints.
 
 A retry of startup reuses the same `bootId`, offer, and metadata. The backend
 can return its existing answer instead of allocating another publisher. A new
-boot gets a new identity. Generations stop delayed requests from modifying a
-replacement session.
+boot gets a new identity. Generations reject stale device operations after
+startup and old viewer memberships.
 
 ## Read the stack from the peer outward
 
@@ -109,7 +111,9 @@ Control permission is a backend decision. `RobotRoom` uses
 `PUT /sessions/{viewerSessionId}/datachannels/update` to set `canReply` on the
 remote `robot` channel for one leased controller. Its commands travel through
 the SFU to the board, which validates and applies them on the radio task.
-Release/expiry revokes permission before the next controller is admitted.
+Within the current generation, release or lease expiry revokes permission
+before the next controller is admitted. Publisher retirement follows the
+[application cleanup policy](../../ARCHITECTURE.md#cleanup-and-failure-behavior).
 Spectrum remains a one-way publication.
 
 ## Replace device-to-server signaling

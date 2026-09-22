@@ -152,7 +152,8 @@ guides. Use [troubleshooting](TROUBLESHOOTING.md) when a step fails.
 
 Select **Release control** and **Disconnect** in open listeners. Power off your
 board to stop publication. Keep the Worker available while its alarms expire
-inactive sessions and retry SFU cleanup. Stop local dev servers with Ctrl-C.
+inactive viewer records and retry cleanup within the current publisher generation.
+Publisher retirement ends those retries. Stop local dev servers with Ctrl-C.
 The [operations guide](PRODUCTION.md#stop-and-clean-up) covers cleanup timing,
 failure handling, and removing your Worker, domain, and dedicated SFU app.
 
@@ -166,6 +167,8 @@ failure handling, and removing your Worker, domain, and dedicated SFU app.
   at eight listeners per board, with one controller.
 - Browsers reconnect manually after a board restart or terminal connection
   failure. A temporary disconnected WebRTC connection may recover in place.
+- Publisher retirement does not enforce closure of old SFU media or reply access.
+  See the [cleanup policy](ARCHITECTURE.md#cleanup-and-failure-behavior).
 - The shared password is a small application authentication seam. Per-user
   identity, login throttling, and deployment abuse controls are integration work.
 - Hardware, Wi-Fi, and live SFU behavior require device tests. Host CI covers

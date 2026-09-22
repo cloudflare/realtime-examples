@@ -65,18 +65,21 @@ after selecting your account:
 
 Use `make monitor` for the board's filtered USB diagnostics. Do not add raw
 SDP, bearer headers, cookies, packet payloads, or firmware contents to logs.
+SFU warnings include bounded symbolic request and item error codes; descriptions
+and SDP are omitted. Non-symbolic codes become `unrecognized_error_code`.
 The [troubleshooting guide](TROUBLESHOOTING.md) maps symptoms to these checks.
 
 ## Stop and clean up
 
 1. Select **Release control** and **Disconnect** in open listeners, then power
    off the board to stop publication and its automatic recovery loop.
-2. Keep the Worker and its SFU credentials available while
-   [alarms expire inactive records and retry cleanup](ARCHITECTURE.md#cleanup-and-failure-behavior).
-   Confirm the board is offline and no viewers remain; check for SFU failures.
-   Status and elapsed time alone do not audit retained receipts or SFU session
-   expiration. Resolve failed cleanup before removing the backend that retries it.
-3. When retiring your dedicated example deployment after cleanup, run from
+2. Keep the Worker and its SFU credentials available for cleanup retries while
+   the publisher generation is current. Replacement or expiry discards its
+   receipts and ends retries. Check SFU failures before retirement; offline
+   status and zero viewers do not prove old media or reply access stopped.
+   Applications needing confirmed revocation must adapt the
+   [cleanup policy](ARCHITECTURE.md#cleanup-and-failure-behavior).
+3. When removing your dedicated example deployment, run from
    `esp32-radio/worker/` with the intended account selected:
 
    ```sh
@@ -98,8 +101,8 @@ The [troubleshooting guide](TROUBLESHOOTING.md) maps symptoms to these checks.
 Preserve the `RobotRoom` export, binding, migration history, and persisted state
 shape. State changes need a migration and rollback plan. Deploy a compatible
 browser/Worker before firmware protocol changes and refresh open listeners.
-See [ERRATA](ERRATA.md) before rollback: older code may not understand pending
-allocation receipts or a newer music pack/partition map.
+See [ERRATA](ERRATA.md) before rollback for cleanup-policy differences, pending
+allocation receipts, and music pack/partition compatibility.
 
 For a compatible rollback, run
 `./node_modules/.bin/wrangler rollback <version-id>` from `worker/`, with your

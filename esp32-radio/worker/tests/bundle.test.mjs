@@ -3,15 +3,14 @@ import { test } from 'node:test';
 import { createHarness } from './helpers/sfu.mjs';
 
 test(
-  'production bundle authenticates, serves RPC and dispatches the actual lease alarm',
+  'production bundle authenticates, expires leases and replaces obsolete sessions independently',
   { timeout: 60000 },
   async (t) => {
     let expired = false;
-    const h = await createHarness(t, ({ path }) =>
-      expired && path.endsWith('/close')
-        ? Response.json({ errorCode: 'session_error' }, { status: 410 })
-        : undefined,
-    );
+    const h = await createHarness(t, ({ path }) => {
+      if (expired && /\/sessions\/session-[12](?:\/|$)/.test(path))
+        return Response.json({ errorCode: 'internal_error' }, { status: 503 });
+    });
     assert.equal((await h.call('/status')).status, 401);
     await h.login();
     await h.start();
@@ -31,7 +30,14 @@ test(
       ),
     );
     expired = true;
+    const before = h.calls.length;
     await h.start({ bootId: 'b'.repeat(32) });
-    assert.equal((await h.status()).viewers, 0);
+    const status = await h.status();
+    assert.equal(status.viewers, 0);
+    assert.equal(status.online, true);
+    assert.equal(
+      h.calls.slice(before).some((call) => /\/sessions\/session-[12](?:\/|$)/.test(call.path)),
+      false,
+    );
   },
 );

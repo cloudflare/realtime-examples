@@ -105,7 +105,6 @@ export class RobotRoom extends DurableObject<Env> {
         ],
       },
       'PUT',
-      !enabled,
     );
   }
   private async retain(session: SessionResources, receipt: AllocationReceipt): Promise<void> {
@@ -135,14 +134,7 @@ export class RobotRoom extends DurableObject<Env> {
     }
     if (session.pendingMids?.length) {
       try {
-        await this.sfu.call(
-          `/sessions/${session.sessionId}/tracks/close`,
-          {
-            tracks: session.pendingMids.map((mid) => ({ mid })),
-            force: true,
-          },
-          'PUT',
-        );
+        await this.sfu.closeTracks(session.sessionId, session.pendingMids);
         delete session.pendingMids;
       } catch {
         ok = false;
@@ -183,11 +175,7 @@ export class RobotRoom extends DurableObject<Env> {
     }
     if (session.mid) {
       try {
-        await this.sfu.call(
-          `/sessions/${session.sessionId}/tracks/close`,
-          { tracks: [{ mid: session.mid }], force: true },
-          'PUT',
-        );
+        await this.sfu.closeTracks(session.sessionId, [session.mid]);
         delete session.mid;
       } catch {
         ok = false;
@@ -196,6 +184,12 @@ export class RobotRoom extends DurableObject<Env> {
     return ok;
   }
   private async expire(): Promise<void> {
+    const p = this.state.publisher;
+    if (!p || Date.now() - p.seen > 90000) {
+      // Retire application membership; this does not close the old SFU transports.
+      this.state = { viewers: {} };
+      return;
+    }
     const controller = this.state.controller;
     if (controller && controller.until <= Date.now()) {
       const v = this.state.viewers[controller.id];
@@ -207,11 +201,6 @@ export class RobotRoom extends DurableObject<Env> {
         v.closing = true;
         if (await this.close(v)) delete this.state.viewers[id];
       }
-    }
-    const p = this.state.publisher;
-    if (p && Date.now() - p.seen > 90000) {
-      p.ready = false;
-      if (await this.close(p)) delete this.state.publisher;
     }
   }
   async alarm(): Promise<void> {
@@ -272,18 +261,10 @@ export class RobotRoom extends DurableObject<Env> {
         400,
         'The S3 offer must contain an audio track.',
       );
-      for (const [id, v] of Object.entries(this.state.viewers)) {
-        v.closing = true;
-        demand(await this.close(v), 502, 'Previous viewers are still closing. Try again.');
-        delete this.state.viewers[id];
-      }
-      if (this.state.publisher)
-        demand(
-          await this.close(this.state.publisher),
-          502,
-          'The previous publisher is still closing. Try again.',
-        );
-      delete this.state.controller;
+      // A replacement boot owns a new transport. Retire the old generation before
+      // allocating, even if setup fails; its SFU resources are no longer tracked here.
+      this.state = { viewers: {} };
+      await this.save();
       const session = await this.sfu.call('/sessions/new');
       demand(session.sessionId, 502, 'The SFU did not create a publisher session.');
       const p: Publisher = {

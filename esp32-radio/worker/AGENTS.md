@@ -26,9 +26,14 @@ in a duplicate handwritten Env interface. Keep RPC errors serializable.
 RobotRoom owns one board's sessions, controller lease, and cleanup. Preserve
 its class name, persisted state shape, and migration history during compatible
 rollouts. Keep SFU mutations serialized across awaits, revoke canReply when a
-lease expires, and retain resources until cleanup succeeds. Status polling
-must not postpone an existing alarm. Firmware API paths and data-channel
-formats must remain compatible with the connected board.
+lease expires within the current generation, and retain failed allocations and
+viewer cleanup while that generation is current. A replacement or expired
+publisher retires its whole generation without SFU cleanup blocking a new boot.
+Persist retirement before allocating the replacement. This does not establish
+that obsolete SFU forwarding or reply access has stopped. Keep request-level
+SFU errors pending; a status code alone does not prove cleanup or revocation.
+Status polling must not postpone an existing alarm. Firmware API paths and
+data-channel formats must remain compatible with the connected board.
 
 Check with make check, make test-worker and make test-worker-bundle from esp32-radio/. Live tests in
 tests/live.mjs require the board, SFU, credentials, and a Chrome CDP endpoint.

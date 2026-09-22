@@ -41,31 +41,36 @@ const receiptsSchema = z
   .catch({ dataChannels: [], tracks: [] });
 export type AllocationReceipt = { channelIds: number[]; mids: string[] };
 
+function diagnosticErrorCode(code: string): string {
+  return /^[a-z][a-z0-9_]{0,63}$/.test(code) ? code : 'unrecognized_error_code';
+}
+
 export class SfuClient {
   private env: Pick<Env, 'REALTIME_APP_ID' | 'REALTIME_APP_TOKEN'>;
   constructor(env: Pick<Env, 'REALTIME_APP_ID' | 'REALTIME_APP_TOKEN'>) {
     this.env = env;
   }
-  async call(
-    path: string,
-    input?: unknown,
-    method = 'POST',
-    goneIsClosed = false,
-  ): Promise<SfuResult> {
-    return this.request(path, input, method, goneIsClosed);
+  async call(path: string, input?: unknown, method = 'POST'): Promise<SfuResult> {
+    return this.request(path, input, method);
   }
   async allocate(
     path: string,
     input: unknown,
     retain: (receipt: AllocationReceipt) => Promise<void>,
   ): Promise<SfuResult> {
-    return this.request(path, input, 'POST', false, retain);
+    return this.request(path, input, 'POST', retain);
+  }
+  async closeTracks(sessionId: string, mids: string[]): Promise<void> {
+    await this.call(
+      `/sessions/${sessionId}/tracks/close`,
+      { tracks: mids.map((mid) => ({ mid })), force: true },
+      'PUT',
+    );
   }
   private async request(
     path: string,
     input: unknown,
     method: string,
-    goneIsClosed: boolean,
     retain?: (receipt: AllocationReceipt) => Promise<void>,
   ): Promise<SfuResult> {
     let response: Response;
@@ -86,7 +91,6 @@ export class SfuClient {
       throw new OperationError(502, 'Could not reach the SFU. Please reconnect.');
     }
     const closing = path.endsWith('/close');
-    if ((closing || goneIsClosed) && [404, 410].includes(response.status)) return {};
     let payload: unknown;
     try {
       payload = await response.json();
@@ -105,8 +109,15 @@ export class SfuClient {
     const parsed = resultSchema.safeParse(payload);
     demand(parsed.success, 502, 'The SFU returned an invalid response.');
     const value = parsed.data;
-    const failed = (item: { errorCode?: string }) =>
-      item.errorCode && !(closing && item.errorCode === 'close_track_error');
+    const requested = closing ? receiptsSchema.parse(input) : undefined;
+    // An item-level absence can satisfy cleanup; a request error does not locate it.
+    const failed = (item: { errorCode?: string; mid?: string; id?: number }) =>
+      item.errorCode &&
+      !(
+        item.errorCode === 'close_track_error' &&
+        ((item.mid !== undefined && requested?.tracks.some(({ mid }) => mid === item.mid)) ||
+          (item.id !== undefined && requested?.dataChannels.some(({ id }) => id === item.id)))
+      );
     if (
       !response.ok ||
       value.errorCode ||
@@ -118,6 +129,13 @@ export class SfuClient {
           phase: 'sfu',
           operation: path.split('/').slice(-2).join('/'),
           status: response.status,
+          errorCode: value.errorCode ? diagnosticErrorCode(value.errorCode) : undefined,
+          trackErrorCodes: value.tracks?.flatMap((item) =>
+            item.errorCode ? [diagnosticErrorCode(item.errorCode)] : [],
+          ),
+          dataChannelErrorCodes: value.dataChannels?.flatMap((item) =>
+            item.errorCode ? [diagnosticErrorCode(item.errorCode)] : [],
+          ),
         }),
       );
     }
