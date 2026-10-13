@@ -87,6 +87,35 @@ examples:
       - Music is supplied separately; sound plays in browsers, with no device microphone or speaker support.
       - The shared viewer password is an application seam; identity integration and rate limiting are deployment responsibilities.
 
+  - id: pipecat-voice-agent
+    title: Pipecat voice agent
+    path: pipecat-voice-agent
+    kind: blueprint
+    summary: Talk to an interruptible voice agent that runs Pipecat in a Python Durable Object, with Workers AI speech and tool calls.
+    category: ai-audio
+    difficulty: advanced
+    components:
+      - browser
+      - Worker
+      - Durable Object
+      - Python Workers
+      - Realtime SFU
+      - WebSocket media adapters
+      - Workers AI
+      - Pipecat
+    maturity: experimental
+    recommended_starting_point: true
+    setup_time_minutes: null
+    hosted_demo: null
+    architecture: pipecat-voice-agent/README.md
+    credential_boundary: server
+    known_limitations:
+      - Calls do not resume after a Worker restart or browser disconnect.
+      - The shared access code is an evaluation seam; identity integration is a deployment responsibility.
+      - The SFU must reach the media adapter endpoints without a Cloudflare Access login challenge.
+      - The default model requires Workers Paid, and Web Search requires separate AI Gateway payment setup.
+      - The bundled Pipecat build relies on hosted AI services; local VAD and Smart Turn are unavailable.
+
   - id: ai-tts-stt
     title: Realtime audio TTS and STT
     path: ai-tts-stt

@@ -59,6 +59,20 @@ the video to JPEG frames for processing and viewing in a Worker.
 This example keeps the Realtime SFU credential on the server. Its publisher and
 administrative operations still need application authorization.
 
+### Talk to a voice agent
+
+Start with [`pipecat-voice-agent/`](pipecat-voice-agent/). After deployment, a
+browser call reaches a voice agent that runs Pipecat in a Python Durable Object.
+You can interrupt its replies, and it can look up weather, Cloudflare
+documentation, and web search results during the call.
+
+Microphone audio travels through Realtime SFU, and WebSocket media adapters
+carry it to and from the agent. Workers AI handles speech recognition, turn
+detection, the language model, and speech synthesis. The Worker keeps the
+Realtime SFU credential, and each call belongs to the browser session that
+created it. A shared access code protects the deployment; replace it with an
+identity provider for individual access.
+
 ### Build an AI audio pipeline
 
 Start with [`ai-tts-stt/`](ai-tts-stt/). After deployment, one browser publishes
@@ -75,6 +89,7 @@ public control and cleanup operations still need application authorization.
 | Connect an embedded device | [`esp32-radio/`](esp32-radio/) | Firmware peer ownership, SFU negotiation, audio and DataChannels, with server-side credentials | Experimental |
 | Build a custom video room | [`video-room/`](video-room/) | Authorized publishing and subscribing, Durable Object presence, reconnect, and cleanup | Experimental |
 | Run cloud gaming | [`cloud-gaming/`](cloud-gaming/) | Container media publication, Access-authenticated viewing, one controlling tab, and DataChannel reliability | Experimental |
+| Talk to a voice agent | [`pipecat-voice-agent/`](pipecat-voice-agent/) | Pipecat in a Python Durable Object, WebSocket media adapters, Workers AI speech, interruptions, and tools | Experimental |
 | Process WebRTC video | [`video-to-jpeg/`](video-to-jpeg/) | Browser video, a Worker, a Durable Object, and a WebSocket media adapter | Experimental |
 | Build speech applications | [`ai-tts-stt/`](ai-tts-stt/) | Speech recognition, generated audio, Workers AI, and bidirectional adapters | Experimental |
 | Broadcast generated speech | [`tts-ws/`](tts-ws/) | An external text-to-speech provider and Realtime SFU fanout | Experimental |
@@ -99,8 +114,9 @@ reproducible checks.
 
 Start with [Pocket Radio](esp32-radio/) for embedded firmware and device
 control, the [custom video room](video-room/) for browser-to-browser media,
-or the [cloud-gaming blueprint](cloud-gaming/) for Container-hosted media and
-upstream control.
+the [cloud-gaming blueprint](cloud-gaming/) for Container-hosted media and
+upstream control, or the [Pipecat voice agent](pipecat-voice-agent/) for
+conversational AI audio.
 
 Use a blueprint to:
 

@@ -1,0 +1,42 @@
+/*! Licenses: /NOTICE.txt and /LICENSES.md */
+@import 'tailwindcss';
+
+/*
+ * The visual system is Tailwind's default palette, shared with the Realtime
+ * video room example: stone neutrals, orange-700 as the single accent, and
+ * sky-600 for focus. See DESIGN.md for the full record.
+ */
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+  button:not(:disabled) {
+    cursor: pointer;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-sky-600);
+    outline-offset: 3px;
+  }
+  ::selection {
+    @apply bg-orange-700/20;
+  }
+}
+
+@keyframes breathe {
+  50% {
+    transform: scale(1.06);
+    opacity: 0.8;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

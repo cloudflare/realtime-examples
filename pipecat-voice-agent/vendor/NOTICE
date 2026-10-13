@@ -1,0 +1,25 @@
+Pipecat Workers profile
+
+Pipecat is Copyright (c) 2024-2026, Daily, under BSD 2-Clause.
+Source: https://github.com/pipecat-ai/pipecat
+This modified distribution includes Cloudflare's compatibility patch and
+package builder, licensed under MIT.
+
+Included third-party components:
+
+Whisper feature extraction in pipecat/audio/turn/smart_turn/_whisper_features.py
+is adapted from Hugging Face Transformers, under Apache 2.0.
+Copyright 2022 The HuggingFace Inc. team.
+Copyright 2023 The HuggingFace Inc. team and the librosa & torchaudio authors.
+Source: https://github.com/huggingface/transformers
+License: TRANSFORMERS-LICENSE
+
+Pipecat UI components in the CLI templates are Copyright (c) 2024-2026, Daily,
+under BSD 2-Clause.
+Source: https://github.com/pipecat-ai/pipecat-ui
+License: PIPECAT-UI-LICENSE
+
+The CLI's shared UI components, hooks, utilities, and styles include shadcn/ui,
+Copyright (c) 2023 shadcn, under MIT.
+Source: https://github.com/shadcn-ui/ui
+License: SHADCN-LICENSE

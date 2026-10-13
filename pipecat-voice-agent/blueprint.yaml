@@ -1,0 +1,52 @@
+version: 1
+id: pipecat-voice-agent
+title: Pipecat voice agent
+summary: Talk to an interruptible voice agent that runs Pipecat in a Python Durable Object, with Workers AI speech and tool calls.
+maturity: experimental
+status: active
+
+topology:
+  publishers: one
+  subscribers: one
+  media:
+    - audio
+  datachannels: false
+
+components:
+  - browser
+  - Worker
+  - Durable Object
+  - Python Workers
+  - Realtime SFU
+  - WebSocket media adapters
+  - Workers AI
+  - Pipecat
+
+entrypoints:
+  source: https://github.com/cloudflare/realtime-examples/tree/main/pipecat-voice-agent
+  demo: null
+  docs: null
+
+security:
+  browser_has_sfu_secret: false
+  authentication: docs/authentication.md
+  authorization: docs/authentication.md#authorization
+
+lifecycle:
+  reconnect: docs/deployment.md#operating-the-example
+  cleanup: docs/deployment.md#operating-the-example
+
+ci:
+  node_version: "22"
+  install: npm ci && (command -v uv >/dev/null || pipx install uv==0.12.23) && uv sync --locked
+  checks:
+    - name: Check
+      run: npm run check
+    - name: Python lint
+      run: npm run lint:python
+    - name: Python tests
+      run: npm run test:python
+  browser_asset_paths:
+    - dist
+
+maintainer: null

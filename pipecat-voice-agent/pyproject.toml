@@ -1,0 +1,33 @@
+[project]
+name = "realtime-pipecat-voice-agent"
+version = "0.1.0"
+license = "MIT"
+license-files = ["LICENSE", "NOTICE.md"]
+requires-python = ">=3.14"
+dependencies = [
+  "pipecat-ai==1.12.0+workersprofile.5",
+  "docopt==0.6.2",
+  "itsdangerous==2.2.0",
+  "httpx2==2.13.1",
+  "mcp-types==2.3.0",
+  "werkzeug>=3.1,<4",
+]
+
+[tool.uv.sources]
+pipecat-ai = { path = "vendor/pipecat_ai-1.12.0+workersprofile.5-py3-none-any.whl" }
+docopt = { path = "vendor/docopt-0.6.2-py3-none-any.whl" }
+
+[dependency-groups]
+dev = ["workers-py==1.17.6", "pytest>=8,<10", "pytest-asyncio>=1,<2", "ruff>=0.14,<1"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/server"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP"]

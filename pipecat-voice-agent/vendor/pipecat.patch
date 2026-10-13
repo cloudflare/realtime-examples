@@ -1,0 +1,89 @@
+--- a/src/pipecat/audio/utils.py
++++ b/src/pipecat/audio/utils.py
+@@ -15,7 +15,6 @@
+ import io
+ import wave
+ 
+-import loudness
+ import numpy as np
+ 
+ from pipecat.audio.resamplers.base_audio_resampler import BaseAudioResampler
+@@ -175,6 +174,14 @@
+     Raises:
+         ValueError: If the audio is shorter than a gating block.
+     """
++    try:
++        import loudness
++    except ModuleNotFoundError as exc:
++        raise ImportError(
++            "This hosted-turn Workers profile does not include loudness. "
++            "Local loudness/VAD audio levels require a supported backend."
++        ) from exc
++
+     audio_np = np.frombuffer(audio, dtype=np.int16)
+     audio_float = audio_np.astype(np.float32) / 32768.0
+ 
+--- a/src/pipecat/utils/string.py
++++ b/src/pipecat/utils/string.py
+@@ -18,8 +18,6 @@
+ from dataclasses import dataclass
+ from functools import cache
+ 
+-# The native extension does not publish Python type stubs.
+-from sentencex import segment  # pyright: ignore[reportAttributeAccessIssue]
+ 
+ _QUOTED_WORD_END = re.compile(r"(?<!\w)([\"'“‘«‹„‟「『]+)[\w.]+\.$")
+ 
+@@ -47,6 +45,14 @@
+     Paragraph separators belong to the following sentence. Trailing whitespace
+     stays in the aggregation buffer until that sentence is emitted.
+     """
++    try:
++        from sentencex import segment
++    except ModuleNotFoundError as exc:
++        raise ImportError(
++            "This hosted-turn Workers profile does not include sentencex. "
++            "Sentence tokenization requires a supported backend."
++        ) from exc
++
+     code = resolve_sentence_tokenizer_language(language)
+ 
+     def tokenize(text: str) -> list[str]:
+--- a/src/pipecat/processors/aggregators/llm_context.py
++++ b/src/pipecat/processors/aggregators/llm_context.py
+@@ -23,7 +23,6 @@
+ from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast, overload
+
+ from loguru import logger
+-from PIL import Image
+
+ from pipecat.adapters.schemas.direct_function import DirectFunction
+ from pipecat.adapters.schemas.function_schema import FunctionSchema
+@@ -159,6 +158,8 @@
+             if image_already_encoded:
+                 bytes = image
+             else:
++                from PIL import Image
++
+                 # Encode to JPEG
+                 buffer = io.BytesIO()
+                 Image.frombytes(format, size, image).save(buffer, format="JPEG")
+--- a/src/pipecat/transports/base_output.py
++++ b/src/pipecat/transports/base_output.py
+@@ -19,7 +19,6 @@
+ from typing import Any
+
+ from loguru import logger
+-from PIL import Image
+
+ from pipecat.audio.dtmf.utils import load_dtmf_audio
+ from pipecat.audio.mixers.base_audio_mixer import BaseAudioMixer
+@@ -1105,6 +1104,8 @@
+                 # which is kind of what happens in P2P connections.
+                 # We need to add support for that inside the DailyTransport
+                 if frame.size != desired_size:
++                    from PIL import Image
++
+                     image = Image.frombytes(frame.format, frame.size, frame.image)
+                     resized_image = image.resize(desired_size)
+                     # logger.warning(f"{frame} does not have the expected size {desired_size}, resizing")
