@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 class AgentConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    name: str = Field(default="Aster", min_length=1, max_length=40)
+    name: str = Field(default="Matt", min_length=1, max_length=40)
     instructions: str = Field(default="Be friendly and useful.", max_length=1600)
     voice: Literal["apollo", "arcas", "asteria", "athena", "luna", "orion", "zeus"] = "arcas"
     tools_enabled: bool = True

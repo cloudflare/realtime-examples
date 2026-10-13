@@ -23,10 +23,54 @@
   }
 }
 
-@keyframes breathe {
+/*
+ * The voice orb draws on a canvas, which cannot read Tailwind classes, so it
+ * resolves these custom properties at mount. Referencing the palette here also
+ * makes Tailwind emit the variables.
+ */
+.orb {
+  --orb-accent: var(--color-orange-500);
+  --orb-dot: var(--color-stone-50);
+  --orb-dot-back: var(--color-stone-400);
+}
+
+/* A slow pulse on the globe's edge invites the first start. */
+.orb-pulse::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  pointer-events: none;
+  border: 1px solid color-mix(in srgb, var(--color-orange-500) 48%, transparent);
+  border-radius: inherit;
+  animation: orb-pulse 2.2s ease-in-out infinite;
+}
+
+@keyframes orb-pulse {
+  0%,
+  100% {
+    opacity: 0.18;
+    transform: scale(1);
+  }
   50% {
-    transform: scale(1.06);
-    opacity: 0.8;
+    opacity: 0.42;
+    transform: scale(1.025);
+  }
+}
+
+/* The dashed line from the orbit's microphone control to the globe. */
+.orb-connector {
+  fill: none;
+  stroke: var(--color-stone-50);
+  stroke-opacity: 0.2;
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+  stroke-linecap: round;
+  animation: orb-connector-flow 1.4s linear infinite;
+}
+
+@keyframes orb-connector-flow {
+  to {
+    stroke-dashoffset: 22;
   }
 }
 

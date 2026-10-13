@@ -1,17 +1,8 @@
-import clsx from 'clsx';
-import {
-  AudioLines,
-  Headphones,
-  LoaderCircle,
-  Mic,
-  MicOff,
-  PhoneOff,
-  Volume2,
-  type LucideIcon,
-} from 'lucide-react';
+import { Headphones, Mic, MicOff, PhoneOff, Volume2, type LucideIcon } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
 import { describeStage, type CallView, type StageView } from '../voice/model';
 import { Button } from './Button';
+import { Orb } from './Orb';
 
 function duration(seconds: number) {
   return `${Math.floor(seconds / 60)
@@ -25,6 +16,8 @@ export function CallStage({
   toolsEnabled,
   maxCallSeconds,
   startControl,
+  canStart,
+  onStart,
   onStop,
   onMute,
   onResume,
@@ -34,6 +27,9 @@ export function CallStage({
   toolsEnabled: boolean;
   maxCallSeconds?: number;
   startControl: ReactNode;
+  /** True when the start control is usable, so the orb can start a call too. */
+  canStart: boolean;
+  onStart: () => void;
   onStop: () => void;
   onMute: () => void;
   onResume: () => void;
@@ -58,7 +54,15 @@ export function CallStage({
       <div className="flex flex-1 flex-col rounded-xl bg-stone-900 p-3 sm:p-4">
         {/* Extra bottom padding keeps the centered copy clear of the corner chips. */}
         <div className="relative flex min-h-[22rem] flex-1 flex-col items-center justify-center rounded-lg border border-white/10 bg-stone-800 px-6 pt-10 pb-16 text-center sm:min-h-[26rem] sm:px-10 lg:min-h-0">
-          <Orb state={stage.orb} level={view.agentLevel} />
+          <Orb
+            controls={stage.controls}
+            level={Math.max(view.userLevel, view.agentLevel)}
+            muted={view.muted}
+            canStart={canStart}
+            onStart={onStart}
+            onStop={onStop}
+            onMute={onMute}
+          />
           <h1 className="max-w-md text-2xl leading-tight font-semibold tracking-tight text-balance text-stone-50 sm:text-3xl">
             {stage.heading}
           </h1>
@@ -104,40 +108,6 @@ export function CallStage({
         </div>
       </div>
     </section>
-  );
-}
-
-const orbStyles = {
-  quiet: { ring: 'border-white/10', icon: 'text-stone-400', breathe: false },
-  loading: { ring: 'border-white/10', icon: 'text-stone-300', breathe: false },
-  live: { ring: 'border-white/10', icon: 'text-orange-500', breathe: false },
-  thinking: { ring: 'border-white/10', icon: 'text-orange-500', breathe: true },
-  speaking: { ring: 'border-orange-500/40', icon: 'text-orange-500', breathe: false },
-} satisfies Record<StageView['orb'], { ring: string; icon: string; breathe: boolean }>;
-
-function Orb({ state, level }: { state: StageView['orb']; level: number }) {
-  const style = orbStyles[state];
-  return (
-    <div className="relative mb-7 flex size-32 items-center justify-center" aria-hidden="true">
-      <div
-        className={clsx(
-          'absolute inset-0 rounded-full border transition-transform duration-150 motion-reduce:transition-none',
-          style.ring,
-          style.breathe && 'motion-safe:animate-[breathe_2s_ease-in-out_infinite]',
-        )}
-        style={{ transform: `scale(${1 + level * 0.28})` }}
-      />
-      <div className="flex size-24 items-center justify-center rounded-full bg-stone-900 ring-1 ring-white/10">
-        {state === 'loading' ? (
-          <LoaderCircle
-            className={clsx('size-9 motion-safe:animate-spin', style.icon)}
-            strokeWidth={1.5}
-          />
-        ) : (
-          <AudioLines className={clsx('size-10', style.icon)} strokeWidth={1.5} />
-        )}
-      </div>
-    </div>
   );
 }
 

@@ -9,7 +9,7 @@ export const agentSchema = z.object({
 });
 export type AgentSettings = z.infer<typeof agentSchema>;
 export const defaultAgent: AgentSettings = {
-  name: 'Aster',
+  name: 'Matt',
   instructions: 'Be friendly and useful.',
   voice: 'arcas',
   tools_enabled: true,

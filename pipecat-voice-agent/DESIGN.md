@@ -171,7 +171,8 @@ The palette is stone neutrals with one accent.
 - **Primary (orange-700):** the only accent. Use it for the single primary
   action on a screen, the brand icon tile (orange-700 on orange-50), and the
   assistant's name in the transcript. On dark stage surfaces use orange-500 for
-  small live indicators such as the waveform and level bars.
+  live indicators: the voice orb's rim, equalizer, and play or stop control,
+  and the microphone level bars.
 - **Neutral (stone-100):** page background. Panels are white with stone-200
   borders; the status bar and notes use stone-50.
 - **Text:** stone-900 for primary text, stone-600 for secondary and helper
@@ -193,7 +194,7 @@ timers, and measurements.
 
 - **Headlines:** `text-2xl`, `text-3xl` on larger screens, semibold, tight
   tracking. One per screen, stating the current state or task plainly ("Join
-  room-3b43177f", "Aster is speaking").
+  room-3b43177f", "Matt is speaking").
 - **Body and UI text:** `text-sm` (14px) with `leading-6` for paragraphs;
   inputs use `text-base` (16px) so phones do not zoom on focus.
 - **Labels and captions:** `text-xs` (12px) is the floor for anything a person
@@ -221,7 +222,8 @@ actions on the lobby.
 Depth comes from tonal layers: stone-100 page, white panel, stone-50 status
 bar, stone-900 stage, stone-800 tiles. Shadows are minimal and neutral:
 `shadow-sm` on the main panel and `shadow-xs` on buttons and inputs. Never use
-colored glows, zero-offset halos, or large soft shadows.
+colored glows, zero-offset halos, or large soft shadows. The voice orb's rim
+glow is the one exception; it is drawn on the stage canvas and stays there.
 
 Avoid nesting bordered containers. A tile inside a stage inside the panel is
 the deepest stack; transcript entries, notes, and tool rows are flat text with
@@ -254,8 +256,15 @@ pills or mix sharp and rounded corners in one view.
   right as quiet or secondary buttons.
 - **Stage and tiles:** stone-900 inset with stone-800 tiles bordered in
   white/10. Each tile carries a bottom-left chip naming the participant and,
-  for the voice agent, what they are doing ("Aster · speaking"). Timers and
+  for the voice agent, what they are doing ("Matt · speaking"). Timers and
   counts are mono chips or pills on the right.
+- **Voice orb:** the stage's centerpiece, a dotted globe drawn on a canvas
+  with an orange-500 rim and a radial equalizer that opens with the call
+  audio. The globe is also the start and stop control, with a play or stop
+  icon at its center. During a call a dashed white/15 orbit surrounds it with
+  the microphone control at the top, joined by a dashed connector. Its colors
+  come from the palette through the `.orb` custom properties in `styles.css`,
+  and it renders one still frame under `prefers-reduced-motion`.
 - **Status bar:** the panel's last row, stone-50 with a top border, a 2px
   colored marker, the word "Status", and one sentence. The marker pulses only
   while work is in flight. Errors replace the routine message and turn the bar
@@ -272,7 +281,8 @@ pills or mix sharp and rounded corners in one view.
 - Do say what happens next in plain words ("Enter your name, then allow camera
   and microphone access.").
 - Do show one status message at a time, in the status bar.
-- Don't use cream or beige backgrounds, gradients, glass effects, or glows.
+- Don't use cream or beige backgrounds, gradients, glass effects, or glows
+  outside the voice orb.
 - Don't add kicker labels above headings or text below 12px.
 - Don't animate layout properties; use transforms for level meters and rings,
   and respect `prefers-reduced-motion`.

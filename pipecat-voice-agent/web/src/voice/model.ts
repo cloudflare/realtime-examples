@@ -102,9 +102,8 @@ export function describeCallEnd(reason: string | null): { status: string; error?
 export type StageView = {
   heading: string;
   subheading: string;
-  /** Participant label suffix, as in "Aster · speaking". Absent outside a call. */
+  /** Participant label suffix, as in "Matt · speaking". Absent outside a call. */
   activity?: string;
-  orb: 'quiet' | 'loading' | 'live' | 'thinking' | 'speaking';
   controls: 'start' | 'cancel' | 'call' | 'ending';
   microphone: 'hidden' | 'off' | 'muted' | 'live';
   showTimer: boolean;
@@ -136,7 +135,6 @@ export function describeStage(
           (toolsEnabled
             ? 'Ask about Cloudflare, check the time or weather, or just say hello.'
             : 'Ask a question, think something through, or just say hello.') + duration,
-        orb: 'quiet',
         controls: 'start',
         microphone: 'hidden',
         showTimer: false,
@@ -148,7 +146,6 @@ export function describeStage(
         heading: 'Getting connected',
         subheading: 'Setting up your microphone and assistant.',
         activity: 'connecting',
-        orb: 'loading',
         controls: 'cancel',
         microphone: describeMicrophone(view),
         showTimer: false,
@@ -162,7 +159,6 @@ export function describeStage(
         heading: 'Ending your call',
         subheading: 'Your microphone is off.',
         activity: 'ending',
-        orb: 'loading',
         controls: 'ending',
         microphone: describeMicrophone(view),
         showTimer: true,
@@ -173,7 +169,6 @@ export function describeStage(
       return {
         heading: 'Call ended',
         subheading: "Start a new call whenever you're ready.",
-        orb: 'quiet',
         controls: 'start',
         microphone: 'hidden',
         // A call that never connected has no duration worth showing.
@@ -196,17 +191,17 @@ function describeConversation(view: CallView, agent: string): StageView {
     showEnableAudio: view.playbackBlocked,
   } as const;
   if (view.muted && view.activity === 'listening') {
-    return { ...shared, heading: 'Your microphone is muted', activity: 'muted', orb: 'live' };
+    return { ...shared, heading: 'Your microphone is muted', activity: 'muted' };
   }
   switch (view.activity) {
     case 'listening':
-      return { ...shared, heading: 'Listening to you', activity: 'listening', orb: 'live' };
+      return { ...shared, heading: 'Listening to you', activity: 'listening' };
     case 'thinking':
-      return { ...shared, heading: `${agent} is thinking`, activity: 'thinking', orb: 'thinking' };
+      return { ...shared, heading: `${agent} is thinking`, activity: 'thinking' };
     case 'speaking':
-      return { ...shared, heading: `${agent} is speaking`, activity: 'speaking', orb: 'speaking' };
+      return { ...shared, heading: `${agent} is speaking`, activity: 'speaking' };
     case 'tool':
-      return { ...shared, heading: 'Looking that up', activity: 'looking it up', orb: 'live' };
+      return { ...shared, heading: 'Looking that up', activity: 'looking it up' };
   }
 }
 

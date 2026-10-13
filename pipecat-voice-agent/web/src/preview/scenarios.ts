@@ -163,7 +163,7 @@ export function previewFor(scenario: Scenario): Preview {
         view: {
           ...view,
           phase: 'ended',
-          agentName: 'Aster',
+          agentName: 'Matt',
           startedAt: Date.now() - 42_000,
           ...describeCallEnd(scenario === 'call-error' ? 'output_disconnected' : 'user_left'),
           history:
