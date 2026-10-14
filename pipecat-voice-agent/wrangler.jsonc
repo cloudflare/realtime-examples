@@ -24,6 +24,8 @@
     "enabled": true,
     "head_sampling_rate": 1,
     "redact_query_string": true,
+    // Traces show each subrequest (Durable Object, rate limiter, Realtime API) as a span.
+    "traces": { "enabled": true },
   },
   // Previews inherit none of the bindings above. Each Preview gets its own CALLS namespace;
   // separate limiter IDs keep Preview traffic out of production's counters.
