@@ -16,6 +16,7 @@ CALL = "b" * 32
         ("/api/calls/not-a-call/events", "GET", 404),
         (f"/api/calls/{CALL}/events", "POST", 405),
         (f"/api/calls/{CALL}/finish", "GET", 405),
+        (f"/api/calls/{CALL}/warm", "POST", 405),
         (f"/media/{CALL}/input", "POST", 405),
         (f"/media/{CALL}/input/", "GET", 404),
         (f"/media//{CALL}/output", "GET", 404),
@@ -55,6 +56,19 @@ async def test_call_create_checks_origin_and_rate_limit_before_forwarding(ctx, e
     stub.fetch.assert_not_awaited()
     env.CALL_LIMITER.limit.return_value.success = True
     assert (await worker.fetch(request)).status == 201
+    stub.fetch.assert_awaited_once_with(request)
+
+
+async def test_warming_forwards_without_spending_the_call_limit(ctx, env, owner_cookie):
+    stub = SimpleNamespace(fetch=AsyncMock(return_value=Response(status=200)))
+    env.CALLS = SimpleNamespace(getByName=Mock(return_value=stub))
+    env.CALL_LIMITER = SimpleNamespace(limit=AsyncMock())
+    request = Request(f"/api/calls/{CALL}/warm", cookie=owner_cookie)
+    assert (await Default(ctx, env).fetch(request)).status == 200
+    env.CALL_LIMITER.limit.assert_not_awaited()
+    env.CALLS.getByName.assert_called_once_with(CALL)
+    unauthenticated = Request(f"/api/calls/{CALL}/warm")
+    assert (await Default(ctx, env).fetch(unauthenticated)).status == 401
     stub.fetch.assert_awaited_once_with(request)
 
 

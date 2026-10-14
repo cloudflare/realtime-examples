@@ -4,6 +4,7 @@ import {
   callSchema,
   eventsSchema,
   negotiationSchema,
+  warmedSchema,
   type AgentSettings,
   type VoiceEvent,
 } from '../lib/contracts';
@@ -16,6 +17,8 @@ import { connected, firstCandidate } from './peer';
 
 import type { CallView } from './model';
 const pendingCallKey = 'voice-pending-call';
+// Warming more often than this adds requests without keeping the object any warmer.
+const warmGapMs = 5_000;
 type Run = {
   id: string;
   cancelled: boolean;
@@ -51,11 +54,17 @@ function delay(ms: number, signal?: AbortSignal) {
   });
 }
 
+function newCallId() {
+  return crypto.randomUUID().replaceAll('-', '');
+}
+
 export class VoiceCall {
   private view = idleCall();
   private listeners = new Set<() => void>();
   private current?: Run;
   private recovering?: Promise<void>;
+  private nextCallId?: string;
+  private warmedAt = -Infinity;
   snapshot = () => this.view;
   subscribe = (listener: () => void) => {
     this.listeners.add(listener);
@@ -84,9 +93,26 @@ export class VoiceCall {
     return pending;
   }
 
+  /**
+   * Starts the next call's Durable Object ahead of the click. A new object's
+   * first request includes its cold start, which would otherwise delay
+   * creating the call. Warming creates nothing on the server.
+   */
+  warm() {
+    if (isCallBusy(this.view) || this.recovering) return;
+    const now = performance.now();
+    if (now - this.warmedAt < warmGapMs) return;
+    this.warmedAt = now;
+    this.nextCallId ??= newCallId();
+    void request(`calls/${this.nextCallId}/warm`, warmedSchema, { timeout: 10_000 }).catch(
+      () => {},
+    );
+  }
+
   async start(agent: AgentSettings, deviceId?: string) {
     if (isCallBusy(this.view)) return;
-    const callId = crypto.randomUUID().replaceAll('-', '');
+    const callId = this.nextCallId ?? newCallId();
+    this.nextCallId = undefined;
     this.update({
       ...idleCall(),
       error: undefined,

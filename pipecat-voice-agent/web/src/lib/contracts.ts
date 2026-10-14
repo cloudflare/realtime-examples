@@ -131,6 +131,7 @@ export const negotiationSchema = z.object({
   requiresImmediateRenegotiation: z.boolean().optional(),
   timings: z.array(timingSchema),
 });
+export const warmedSchema = z.object({ warm: z.literal(true) });
 export const attachedSchema = z.object({
   attached: z.literal(true),
   timings: z.array(timingSchema),

@@ -64,6 +64,7 @@ export default function PreviewApp() {
             select('connecting');
             timer.current = setTimeout(() => select('listening'), 650);
           }}
+          onWarm={() => {}}
           onSignIn={() => {
             // Any code works in the preview: show the busy state, then unlock.
             select('signing-in');

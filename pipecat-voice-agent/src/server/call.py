@@ -123,6 +123,11 @@ class VoiceCall(DurableObject):
             owner = await browser_auth(self.env).identity(request)
             if request.method != "GET":
                 check_origin(request)
+            if request.method == "GET" and action == "warm":
+                # The browser calls this before Start so the new object's cold
+                # start is not part of creating the call. It reads and writes
+                # nothing, so it reveals nothing about a call with this ID.
+                return reply({"warm": True})
             if request.method == "POST" and action == "finish":
                 # A stop can arrive while setup holds the mutation lock. Only
                 # its actual owner may invalidate that in-flight operation.

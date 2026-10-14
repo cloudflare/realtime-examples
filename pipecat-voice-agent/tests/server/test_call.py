@@ -92,6 +92,16 @@ async def test_every_call_operation_requires_its_owner(ctx, env, owner_cookie):
     assert not call.stopping
 
 
+async def test_warming_needs_a_login_and_leaves_no_call_behind(ctx, env, owner_cookie):
+    call = VoiceCall(ctx, env)
+    assert (await call.fetch(Request(BASE + "/warm"))).status == 401
+    warmed = await call.fetch(Request(BASE + "/warm", cookie=owner_cookie))
+    assert warmed.status == 200
+    assert ctx.storage.values == {}
+    assert ctx.storage.alarm is None
+    assert (await call.fetch(Request(BASE + "/create", {}, cookie=owner_cookie))).status == 201
+
+
 async def test_publish_retry_is_idempotent_and_conflicting_offer_is_rejected(
     ctx, env, owner_cookie
 ):

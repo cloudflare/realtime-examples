@@ -41,6 +41,8 @@ For a voice check, ask a question, give the agent a fact to recall, exercise a t
 
 Browser startup timings are in the console and **Connection details**. Server timings are nested inside browser operations, so adding every row together overcounts setup time. The total measures application startup, including microphone access and network setup; it is not a Worker cold-start measurement. Synchronous Python initialization should be assessed with Workers CPU telemetry because Worker clocks advance with I/O.
 
+Each call has its own Durable Object, and a new object's first request includes its cold start. The page warms the next call's object while it is open and when the pointer or focus reaches Start, so creating the call usually skips that delay. A warm request needs a login, does not count toward the call rate limit, and stores nothing.
+
 For a failed connection, use the negotiation phase and ICE state from the browser console to locate the failing step. Avoid logging raw SDP, adapter callback URLs, cookies, or full provider responses: these can carry credentials or conversation data.
 
 ## Worker logs

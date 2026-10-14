@@ -53,6 +53,33 @@ it('leaves connecting state when browser audio initialization fails', async () =
   expect(request).not.toHaveBeenCalled();
 });
 
+describe('warming', () => {
+  it('creates the call on the object it warmed, then warms a new one', async () => {
+    vi.mocked(request).mockResolvedValue({ warm: true });
+    const now = vi.spyOn(performance, 'now').mockReturnValue(1_000);
+    try {
+      const call = new VoiceCall();
+      call.warm();
+      call.warm();
+      expect(request).toHaveBeenCalledTimes(1);
+      const warmed = vi.mocked(request).mock.calls[0][0];
+      expect(warmed).toMatch(/^calls\/[a-f0-9]{32}\/warm$/);
+
+      audio.open.mockRejectedValueOnce(new DOMException('Denied', 'NotAllowedError'));
+      await call.start(defaultAgent);
+      expect(`calls/${call.snapshot().callId}/warm`).toBe(warmed);
+      expect(request).toHaveBeenCalledTimes(1);
+
+      now.mockReturnValue(10_000);
+      call.warm();
+      expect(request).toHaveBeenCalledTimes(2);
+      expect(vi.mocked(request).mock.calls[1][0]).not.toBe(warmed);
+    } finally {
+      now.mockRestore();
+    }
+  });
+});
+
 describe('pending call recovery', () => {
   it('shares an in-flight cleanup and allows another attempt after failure', async () => {
     storage.set(pendingKey, 'a'.repeat(32));

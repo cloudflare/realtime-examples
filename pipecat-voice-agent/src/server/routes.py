@@ -61,7 +61,7 @@ _map = Map(
         Rule("/api/login", methods=["POST"], endpoint=login),
         Rule("/api/logout", methods=["POST"], endpoint=logout),
         Rule(
-            "/api/calls/<call_id:call_id>/<any(events,status):action>",
+            "/api/calls/<call_id:call_id>/<any(events,status,warm):action>",
             methods=["GET"],
             endpoint=call,
         ),

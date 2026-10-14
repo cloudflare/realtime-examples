@@ -23,6 +23,7 @@ export function VoiceRoom({
   session,
   maxCallSeconds,
   onStart,
+  onWarm,
   onSignIn,
   onRetry,
   onStop,
@@ -35,6 +36,7 @@ export function VoiceRoom({
   session: SessionState;
   maxCallSeconds?: number;
   onStart: (settings: Settings) => void;
+  onWarm: () => void;
   onSignIn: (credential: string) => void;
   onRetry: () => void;
   onStop: () => void;
@@ -77,6 +79,7 @@ export function VoiceRoom({
               ended={view.phase === 'ended'}
               disabled={!settings.name.trim()}
               onStart={start}
+              onWarm={onWarm}
               onSignIn={onSignIn}
               onRetry={onRetry}
             />

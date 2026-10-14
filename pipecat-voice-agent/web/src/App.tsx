@@ -64,6 +64,7 @@ export default function App() {
         onStart={(agent) => {
           void start(agent);
         }}
+        onWarm={() => call.warm()}
         onSignIn={(credential) => {
           void session.signIn(credential);
         }}

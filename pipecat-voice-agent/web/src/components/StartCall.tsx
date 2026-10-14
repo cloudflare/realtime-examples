@@ -11,6 +11,7 @@ export function StartCall({
   ended,
   disabled,
   onStart,
+  onWarm,
   onSignIn,
   onRetry,
 }: {
@@ -19,6 +20,8 @@ export function StartCall({
   /** True when the call cannot start yet, for example without an assistant name. */
   disabled: boolean;
   onStart: () => void;
+  /** Called when the person points at or focuses Start, just before a likely click. */
+  onWarm: () => void;
   onSignIn: (credential: string) => void;
   onRetry: () => void;
 }) {
@@ -34,7 +37,7 @@ export function StartCall({
     case 'checking':
       return <StartButton busy disabled ended={ended} onClick={onStart} />;
     case 'ready':
-      return <StartButton disabled={disabled} ended={ended} onClick={onStart} />;
+      return <StartButton disabled={disabled} ended={ended} onClick={onStart} onWarm={onWarm} />;
   }
 }
 
@@ -43,14 +46,23 @@ function StartButton({
   disabled,
   ended,
   onClick,
+  onWarm,
 }: {
   busy?: boolean;
   disabled: boolean;
   ended: boolean;
   onClick: () => void;
+  onWarm?: () => void;
 }) {
   return (
-    <Button tone="primary" className="w-full sm:w-auto" disabled={disabled} onClick={onClick}>
+    <Button
+      tone="primary"
+      className="w-full sm:w-auto"
+      disabled={disabled}
+      onClick={onClick}
+      onPointerEnter={onWarm}
+      onFocus={onWarm}
+    >
       {busy && <LoaderCircle className="size-4 motion-safe:animate-spin" aria-hidden="true" />}
       {busy ? 'Checking...' : ended ? 'Start a new call' : 'Start conversation'}
       {!busy && <ArrowRight className="size-4" aria-hidden="true" />}
