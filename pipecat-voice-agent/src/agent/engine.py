@@ -85,11 +85,17 @@ class VoiceEngine:
     def background(self, coro, name):
         task = asyncio.create_task(coro, name=name)
         self.tasks.add(task)
-        proxy = create_proxy(task)
+        # waitUntil gets a future that always resolves. Given the task itself,
+        # the runtime would log each cancellation at call end as an uncaught
+        # error; real failures are reported below.
+        settled = asyncio.get_running_loop().create_future()
+        proxy = create_proxy(settled)
         self.ctx.waitUntil(proxy)
 
         def completed(result):
             self.tasks.discard(result)
+            if not settled.done():
+                settled.set_result(None)
             proxy.destroy()
             if not result.cancelled() and result.exception() is not None:
                 self.fail_call(name, result.exception())
