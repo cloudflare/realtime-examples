@@ -29,6 +29,8 @@ class VoiceCall(DurableObject):
         self.loaded = False
         self.lock = asyncio.Lock()
         self.engine = None
+        # Adapter URLs carry a per-call credential, so they stay in memory.
+        self.endpoints = None
         self.stopping = False
         self.finish_task = None
         self.last_seen = time.monotonic()
@@ -146,7 +148,7 @@ class VoiceCall(DurableObject):
                     return await self.create(request, owner)
                 self.authorize(owner)
                 self.last_seen = time.monotonic()
-                if self.state["phase"] in {"preparing", "active"} and not self.engine:
+                if self.state["phase"] in {"preparing", "published", "active"} and not self.engine:
                     await self.finish("session_restarted")
                 if action in {"events", "status"} and request.method == "GET":
                     try:
@@ -251,33 +253,27 @@ class VoiceCall(DurableObject):
             if action == "publish":
                 if body.sessionDescription.type != "offer":
                     raise ApiError("offer_required")
-                result = await sfu.publish(
-                    self.state["id"], body.sessionDescription.model_dump(), body.mid
-                )
-                self.state["phase"] = "published"
-            elif action == "attach":
                 self.state["phase"] = "preparing"
                 self.state["expires_at_ms"] = round((time.time() + MAX_CALL_SECONDS) * 1000)
                 await self.save()
                 await self.ctx.storage.setAlarm(self.state["expires_at_ms"])
-                with self.measure("agent_prepare", "Prepare voice agent"):
-                    self.engine = VoiceEngine(
-                        self.ctx,
-                        self.env,
-                        AgentConfig.model_validate(self.state["agent"]),
-                        self.request_finish,
-                        lambda: time.monotonic() - self.last_seen < 60,
-                        call_id=self.state["id"],
-                        owner_id=self.state["owner"],
-                    )
-                    parsed = urlparse(request.url)
-                    endpoints = await self.engine.prepare(
-                        f"{parsed.scheme}://{parsed.netloc}", self.state["id"]
-                    )
+                # The agent does not need the media session, so it starts while
+                # the SFU negotiates. Neither is cancelled when the other fails:
+                # cleanup must see every resource that was actually created.
+                outcomes = await asyncio.gather(
+                    sfu.publish(self.state["id"], body.sessionDescription.model_dump(), body.mid),
+                    self.prepare_agent(request),
+                    return_exceptions=True,
+                )
+                for outcome in outcomes:
+                    if isinstance(outcome, BaseException):
+                        raise outcome
+                result, self.endpoints = outcomes
                 self.last_seen = time.monotonic()
-                if self.stopping:
-                    raise ApiError("call_ended", 409)
-                await sfu.attach(self.state["id"], endpoints)
+                self.state["phase"] = "published"
+            elif action == "attach":
+                await sfu.attach(self.state["id"], self.endpoints)
+                self.endpoints = None
                 self.state["phase"] = "active"
                 result = {"attached": True}
             elif action == "subscribe":
@@ -305,6 +301,20 @@ class VoiceCall(DurableObject):
             await self.finish("setup_failed")
             raise
 
+    async def prepare_agent(self, request):
+        with self.measure("agent_prepare", "Prepare voice agent"):
+            self.engine = VoiceEngine(
+                self.ctx,
+                self.env,
+                AgentConfig.model_validate(self.state["agent"]),
+                self.request_finish,
+                lambda: time.monotonic() - self.last_seen < 60,
+                call_id=self.state["id"],
+                owner_id=self.state["owner"],
+            )
+            parsed = urlparse(request.url)
+            return await self.engine.prepare(f"{parsed.scheme}://{parsed.netloc}", self.state["id"])
+
     def request_finish(self, reason):
         self.stopping = True
         if self.finish_task and not self.finish_task.done():
@@ -324,6 +334,7 @@ class VoiceCall(DurableObject):
 
     async def finish(self, reason):
         self.stopping = True
+        self.endpoints = None
         if self.state["phase"] == "ended":
             return
         self.state["phase"] = "ending"

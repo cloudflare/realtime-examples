@@ -9,9 +9,21 @@ from agent.config import AgentConfig
 from agent.engine import VoiceEngine
 from server.auth_code import COOKIE, AccessCodeAuth
 from server.call import VoiceCall
+from server.http import ApiError
 
 CALL = "b" * 32
 BASE = f"/api/calls/{CALL}"
+OFFER = {"mid": "0", "sessionDescription": {"type": "offer", "sdp": "offer"}}
+ANSWER = {"sessionDescription": {"type": "answer", "sdp": "answer"}}
+ENDPOINTS = {role: f"wss://voice.example/media/{CALL}/{role}" for role in ("input", "output")}
+
+
+@pytest.fixture
+def prepared(monkeypatch):
+    """Replaces the real pipeline and speech services with a recorded prepare."""
+    prepare = AsyncMock(return_value=ENDPOINTS)
+    monkeypatch.setattr(VoiceEngine, "prepare", prepare)
+    return prepare
 
 
 @pytest.fixture
@@ -103,20 +115,102 @@ async def test_warming_needs_a_login_and_leaves_no_call_behind(ctx, env, owner_c
 
 
 async def test_publish_retry_is_idempotent_and_conflicting_offer_is_rejected(
-    ctx, env, owner_cookie
+    ctx, env, owner_cookie, prepared
 ):
     call = VoiceCall(ctx, env)
     await call.fetch(Request(BASE + "/create", {}, cookie=owner_cookie))
     sfu = AsyncMock()
-    sfu.publish.return_value = {"sessionDescription": {"type": "answer", "sdp": "answer"}}
+    sfu.publish.return_value = ANSWER
     call.sfu = lambda: sfu
-    body = {"mid": "0", "sessionDescription": {"type": "offer", "sdp": "offer"}}
+    body = json.loads(json.dumps(OFFER))
     first = await call.fetch(Request(BASE + "/publish", body, cookie=owner_cookie))
     second = await call.fetch(Request(BASE + "/publish", body, cookie=owner_cookie))
     assert first.data == second.data
     sfu.publish.assert_awaited_once()
+    prepared.assert_awaited_once()
     body["sessionDescription"]["sdp"] = "different offer"
     assert (await call.fetch(Request(BASE + "/publish", body, cookie=owner_cookie))).status == 409
+
+
+async def test_publish_prepares_the_agent_while_the_media_session_starts(
+    ctx, env, owner_cookie, monkeypatch
+):
+    call = VoiceCall(ctx, env)
+    await call.fetch(Request(BASE + "/create", {}, cookie=owner_cookie))
+    started = set()
+    both = asyncio.Event()
+
+    async def overlapping(name, value):
+        started.add(name)
+        if len(started) == 2:
+            both.set()
+        # Run one after the other, these would time out and fail the publish.
+        await asyncio.wait_for(both.wait(), 1)
+        return value
+
+    async def prepare(self, origin, call_id):
+        return await overlapping("agent", ENDPOINTS)
+
+    async def publish(*_):
+        return await overlapping("media", ANSWER)
+
+    monkeypatch.setattr(VoiceEngine, "prepare", prepare)
+    sfu = AsyncMock()
+    sfu.publish.side_effect = publish
+    call.sfu = lambda: sfu
+    published = await call.fetch(Request(BASE + "/publish", OFFER, cookie=owner_cookie))
+    assert published.status == 200
+    assert published.data["sessionDescription"] == ANSWER["sessionDescription"]
+    assert "agent_prepare" in [row["operation"] for row in published.data["timings"]]
+    assert call.state["phase"] == "published"
+    attached = await call.fetch(Request(BASE + "/attach", {}, cookie=owner_cookie))
+    assert attached.data["attached"]
+    sfu.attach.assert_awaited_once_with(CALL, ENDPOINTS)
+    assert call.endpoints is None
+
+
+async def test_failed_publish_waits_for_the_agent_then_cleans_up(
+    ctx, env, owner_cookie, monkeypatch
+):
+    call = VoiceCall(ctx, env)
+    await call.fetch(Request(BASE + "/create", {}, cookie=owner_cookie))
+    prepared = asyncio.Event()
+
+    async def prepare(self, origin, call_id):
+        await asyncio.sleep(0.01)
+        prepared.set()
+        return ENDPOINTS
+
+    async def finish(self, reason):
+        assert prepared.is_set()
+        self.cleanup_complete = True
+
+    monkeypatch.setattr(VoiceEngine, "prepare", prepare)
+    monkeypatch.setattr(VoiceEngine, "finish", finish)
+    sfu = AsyncMock()
+    sfu.publish.side_effect = ApiError("sfu_unavailable", 502)
+    sfu.cleanup.return_value = True
+    call.sfu = lambda: sfu
+    response = await call.fetch(Request(BASE + "/publish", OFFER, cookie=owner_cookie))
+    assert response.status == 502
+    assert call.state["phase"] == "ended"
+    assert call.state["finish_reason"] == "setup_failed"
+    sfu.cleanup.assert_awaited_once()
+
+
+async def test_a_restart_after_publish_ends_the_call(ctx, env, owner_cookie):
+    call = VoiceCall(ctx, env)
+    await call.fetch(Request(BASE + "/create", {}, cookie=owner_cookie))
+    call.state["phase"] = "published"
+    await call.save()
+    restarted = VoiceCall(ctx, env)
+    sfu = AsyncMock()
+    sfu.cleanup.return_value = True
+    restarted.sfu = lambda: sfu
+    response = await restarted.fetch(Request(BASE + "/attach", {}, cookie=owner_cookie))
+    assert response.status == 409
+    assert restarted.state["finish_reason"] == "session_restarted"
+    sfu.attach.assert_not_awaited()
 
 
 async def test_cleanup_retries_owned_resources_after_a_restart(ctx, env, owner_cookie):
