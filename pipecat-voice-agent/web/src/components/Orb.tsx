@@ -286,7 +286,14 @@ export function Orb({
   const disabled = controls === 'ending' || (controls === 'start' && !canStart);
 
   return (
-    <div ref={frame} className="mb-7 flex w-full justify-center">
+    // The frame is only as tall as the globe canvas. The orbit and microphone
+    // only appear during a call and overflow it, so the heading can sit close
+    // to the globe the rest of the time.
+    <div
+      ref={frame}
+      className="mb-5 flex w-full items-center justify-center"
+      style={{ height: globeSize }}
+    >
       <div ref={ref} className="relative isolate shrink-0" style={{ width: size, height: size }}>
         {/* Dashed orbit, present only during a call. */}
         <svg
