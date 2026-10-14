@@ -172,7 +172,7 @@ The palette is stone neutrals with one accent.
   action on a screen, the brand icon tile (orange-700 on orange-50), and the
   assistant's name in the transcript. On dark stage surfaces use orange-500 for
   live indicators: the voice orb's rim, ticks, and center icon during a call,
-  the glyph field under the pointer, and the microphone level bars.
+  and the microphone level bars.
 - **Neutral (stone-100):** page background. Panels are white with stone-200
   borders; the status bar and notes use stone-50.
 - **Text:** stone-900 for primary text, stone-600 for secondary and helper
@@ -263,11 +263,9 @@ pills or mix sharp and rounded corners in one view.
   into an equalizer with the call audio. It is decorative: the controls stay
   in the row under the stage, and a sound-wave icon at its center turns
   orange-500 during a call. The globe rests on a still frame and only animates
-  while a call is live. Behind it, a field of monospace glyphs in stone-50 at
-  low opacity clears around the globe, fades toward the edges, and brightens
-  to orange-500 under the pointer. Both canvases take their colors from the
-  palette through the custom properties in `styles.css` and render still
-  frames under `prefers-reduced-motion`.
+  while a call is live. The canvas takes its colors from the palette through
+  the custom properties in `styles.css` and renders a still frame under
+  `prefers-reduced-motion`.
 - **Status bar:** the panel's last row, stone-50 with a top border, a 2px
   colored marker, the word "Status", and one sentence. The marker pulses only
   while work is in flight. Errors replace the routine message and turn the bar

@@ -1,6 +1,6 @@
 import clsx from 'clsx';
 import { AudioLines, LoaderCircle } from 'lucide-react';
-import { useEffect, useLayoutEffect, useRef, useState, type Ref } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { resolveStageColor, rgbWithAlpha, stageFallbacks } from '../lib/canvas-theme';
 import type { StageView } from '../voice/model';
 
@@ -224,13 +224,10 @@ function useWidgetSize(ref: React.RefObject<HTMLElement | null>) {
 }
 
 export function Orb({
-  ref,
   controls,
   userLevel,
   agentLevel,
 }: {
-  /** Receives the globe's box, which the stage background clears around. */
-  ref?: Ref<HTMLDivElement>;
   controls: StageView['controls'];
   /** 0..1 audio levels as the call reports them. */
   userLevel: number;
@@ -249,7 +246,7 @@ export function Orb({
 
   return (
     <div ref={frame} className="mb-5 flex w-full justify-center" aria-hidden="true">
-      <div ref={ref} className="relative shrink-0" style={{ width: size, height: size }}>
+      <div className="relative shrink-0" style={{ width: size, height: size }}>
         <Globe size={size} active={inCall || busy} getLevel={getLevel} />
         <div
           className={clsx(

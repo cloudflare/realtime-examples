@@ -1,7 +1,7 @@
 /*
- * Shared helpers for the stage's canvas drawings. Canvases cannot read
- * Tailwind classes, so colors come from the custom properties that
- * `.orb` and `.ascii-field` declare in styles.css.
+ * Helpers for the orb's canvas drawing. A canvas cannot read Tailwind
+ * classes, so colors come from the custom properties that `.orb` declares
+ * in styles.css.
  */
 
 export type RgbColor = readonly [red: number, green: number, blue: number];
