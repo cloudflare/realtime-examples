@@ -1,26 +1,19 @@
 import clsx from 'clsx';
-import { LoaderCircle, Mic, MicOff, Play, Square } from 'lucide-react';
+import { AudioLines, LoaderCircle } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef, useState, type Ref } from 'react';
 import { resolveStageColor, rgbWithAlpha, stageFallbacks } from '../lib/canvas-theme';
 import type { StageView } from '../voice/model';
 
 /*
  * The voice orb: a dotted globe drawn on a canvas, ringed by fine orange
- * ticks that open into an equalizer with the call audio. During a call a
- * dashed orbit appears around it with the microphone control at the top, and
- * the globe itself starts or stops the call. The canvas adopts its colors from
- * the Tailwind palette through the `.orb` custom properties in styles.css.
+ * ticks that open into an equalizer with the call audio. It is decorative;
+ * the call controls live in the row under the stage. The canvas adopts its
+ * colors from the Tailwind palette through the `.orb` custom properties in
+ * styles.css, and it only animates while a call is live.
  */
 
-// Geometry is expressed against the reference widget size and scaled down
-// together so the orbit, the connector, and the microphone stay aligned.
-const REFERENCE_SIZE = 440;
-const GLOBE_RATIO = 343 / REFERENCE_SIZE;
-const ORBIT_RADIUS_RATIO = 180 / REFERENCE_SIZE;
-const CONTROL_RATIO = 66 / REFERENCE_SIZE;
-const MIN_CONTROL_SIZE = 44;
-const MIN_SIZE = 200;
-const MAX_SIZE = 320;
+const MIN_SIZE = 160;
+const MAX_SIZE = 250;
 // The sphere's radius as a share of the canvas; the glow and ticks use the rest.
 const SPHERE_FRACTION = 0.36;
 const GLOW_RADIUS = 1.38;
@@ -29,8 +22,10 @@ const GLOW_RADIUS = 1.38;
 // assistant), so levels are scaled back before they reach it.
 const USER_LEVEL_SCALE = 2.6 / 8;
 const AGENT_LEVEL_SCALE = 3.4 / 8;
-// Caps the equalizer so loud input never swallows the rim and orbit.
+// Caps the equalizer so loud input never swallows the rim.
 const MAX_AMPLITUDE = 1.3;
+// Below this the settling equalizer is flat enough to stop drawing.
+const SETTLED_LEVEL = 0.004;
 
 /** The animated globe. `getLevel` is read every frame, so audio never forces a render. */
 function Globe({
@@ -45,8 +40,8 @@ function Globe({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const activeRef = useRef(active);
   const getLevelRef = useRef(getLevel);
-  const smoothedLevelRef = useRef(0);
-  const repaintRef = useRef(() => {});
+  const levelRef = useRef(0);
+  const wakeRef = useRef(() => {});
   activeRef.current = active;
   getLevelRef.current = getLevel;
 
@@ -90,19 +85,17 @@ function Globe({
       return [x, p[1] * cosT - z * sinT, p[1] * sinT + z * cosT];
     };
 
-    let raf = 0;
-    let level = smoothedLevelRef.current;
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
-    let reduce = reducedMotion.matches;
+    let raf = 0;
+    let level = levelRef.current;
+    // Rotation and wave phase accumulate only while frames run, so a still
+    // frame looks the same before and after a call.
+    let rotation = -0.5;
+    let phase = 0;
+    let lastTime: number | undefined;
 
-    const frame = (time: number) => {
-      const live = activeRef.current;
-      const target = live ? Math.max(0.04, Math.min(1, getLevelRef.current())) : 0;
-      level += (target - level) * 0.12;
-      smoothedLevelRef.current = level;
-
+    const draw = (live: boolean) => {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      const ry = time * (live ? 0.00018 : 0.00008) - 0.5;
 
       // Rim glow.
       const glowRadius = R * GLOW_RADIUS;
@@ -126,7 +119,7 @@ function Globe({
 
       // Sphere dots: brighter and larger toward the front.
       for (const p of dots) {
-        const v = rotate(p, ry);
+        const v = rotate(p, rotation);
         const x = cx + R * v[0];
         const y = cy - R * v[1];
         if (v[2] > 0) {
@@ -143,8 +136,8 @@ function Globe({
         }
       }
 
-      // A ring of ticks just outside the rim. Outside a call they barely
-      // move; a live call opens them into an equalizer that follows the audio.
+      // A ring of ticks just outside the rim. Outside a call they lie flat;
+      // a live call opens them into an equalizer that follows the audio.
       const bars = 90;
       const base = R * 1.06;
       const amp = Math.min(MAX_AMPLITUDE, (live ? 0.28 : 0.08) + level * 2.6);
@@ -153,9 +146,9 @@ function Globe({
       for (let i = 0; i < bars; i++) {
         const angle = (i / bars) * Math.PI * 2 - Math.PI / 2;
         let wave =
-          Math.sin(angle * 3 + time * 0.0016) +
-          0.6 * Math.sin(angle * 7 - time * 0.0021) +
-          0.4 * Math.sin(angle * 13 + time * 0.0009);
+          Math.sin(angle * 3 + phase * 0.0016) +
+          0.6 * Math.sin(angle * 7 - phase * 0.0021) +
+          0.4 * Math.sin(angle * 13 + phase * 0.0009);
         wave = wave / 2 + 0.5;
         const length = R * 0.03 + R * 0.24 * amp * Math.max(0.05, wave);
         const c = Math.cos(angle);
@@ -168,45 +161,51 @@ function Globe({
         ctx.stroke();
       }
       ctx.globalCompositeOperation = 'source-over';
-
-      // Reduced motion renders a single still frame: no spin, no equalizer loop.
-      if (!reduce) raf = requestAnimationFrame(frame);
     };
 
-    repaintRef.current = () => {
-      if (reduce) frame(performance.now());
+    const frame = (time: number) => {
+      raf = 0;
+      const live = activeRef.current;
+      const target = live ? Math.max(0.04, Math.min(1, getLevelRef.current())) : 0;
+      level += (target - level) * 0.12;
+      if (!live && level < SETTLED_LEVEL) level = 0;
+      levelRef.current = level;
+      const elapsed = lastTime === undefined ? 0 : time - lastTime;
+      lastTime = time;
+      phase += elapsed;
+      if (live) rotation += elapsed * 0.00018;
+      draw(live);
+      // Frames continue only while the call is live or the ticks are still
+      // settling after it; otherwise the globe rests on this still frame.
+      if (!reducedMotion.matches && (live || level > 0)) {
+        raf = requestAnimationFrame(frame);
+      } else {
+        lastTime = undefined;
+      }
     };
-    const onReducedMotionChange = () => {
-      reduce = reducedMotion.matches;
-      cancelAnimationFrame(raf);
-      frame(performance.now());
+    const wake = () => {
+      if (!raf) raf = requestAnimationFrame(frame);
     };
-    reducedMotion.addEventListener('change', onReducedMotionChange);
+    wakeRef.current = wake;
+    reducedMotion.addEventListener('change', wake);
     frame(performance.now());
 
     return () => {
-      repaintRef.current = () => {};
-      reducedMotion.removeEventListener('change', onReducedMotionChange);
+      wakeRef.current = () => {};
+      reducedMotion.removeEventListener('change', wake);
       cancelAnimationFrame(raf);
     };
   }, [size]);
 
-  // A still frame must be redrawn when the call state changes its colors.
+  // A call starting or ending wakes the loop so the globe follows it.
   useEffect(() => {
-    repaintRef.current();
+    wakeRef.current();
   }, [active]);
 
-  return (
-    <canvas
-      ref={canvasRef}
-      className="orb block"
-      style={{ width: size, height: size }}
-      aria-hidden="true"
-    />
-  );
+  return <canvas ref={canvasRef} className="orb block" style={{ width: size, height: size }} />;
 }
 
-/** Fits the widget to its container, so the globe scales with the stage. */
+/** Fits the globe to its container, so it scales with the stage. */
 function useWidgetSize(ref: React.RefObject<HTMLElement | null>) {
   const [size, setSize] = useState(MAX_SIZE);
   useLayoutEffect(() => {
@@ -224,43 +223,18 @@ function useWidgetSize(ref: React.RefObject<HTMLElement | null>) {
   return size;
 }
 
-const centerIcons = {
-  start: Play,
-  cancel: LoaderCircle,
-  call: Square,
-  ending: LoaderCircle,
-} satisfies Record<StageView['controls'], typeof Play>;
-
-const centerLabels = {
-  start: 'Start conversation',
-  cancel: 'Cancel',
-  call: 'End call',
-  ending: 'Ending call',
-} satisfies Record<StageView['controls'], string>;
-
 export function Orb({
   ref,
   controls,
   userLevel,
   agentLevel,
-  muted,
-  canStart,
-  onStart,
-  onStop,
-  onMute,
 }: {
-  /** Receives the square widget, which the stage background clears around. */
+  /** Receives the globe's box, which the stage background clears around. */
   ref?: Ref<HTMLDivElement>;
   controls: StageView['controls'];
   /** 0..1 audio levels as the call reports them. */
   userLevel: number;
   agentLevel: number;
-  muted: boolean;
-  /** True when the start control is usable, so the globe can start a call too. */
-  canStart: boolean;
-  onStart: () => void;
-  onStop: () => void;
-  onMute: () => void;
 }) {
   const frame = useRef<HTMLDivElement>(null);
   const size = useWidgetSize(frame);
@@ -271,132 +245,27 @@ export function Orb({
 
   const inCall = controls === 'call';
   const busy = controls === 'cancel' || controls === 'ending';
-  const scale = (value: number) => Math.round((value * size) / REFERENCE_SIZE);
-  const globeSize = Math.round(size * GLOBE_RATIO);
-  // The hit target covers the sphere rather than the glow and ticks around it.
-  const hitSize = Math.round(globeSize * SPHERE_FRACTION * 2);
-  const orbitRadius = scale(ORBIT_RADIUS_RATIO * REFERENCE_SIZE);
-  const center = size / 2;
-  const controlSize = Math.max(MIN_CONTROL_SIZE, scale(CONTROL_RATIO * REFERENCE_SIZE));
-  const controlTop = Math.max(center - orbitRadius, controlSize / 2);
-  const connectorTop = controlTop + controlSize / 2;
-  const connectorHeight = Math.max(0, center - hitSize / 2 - connectorTop);
-  const iconSize = Math.round(globeSize * 0.2);
-  const Icon = centerIcons[controls];
-  const disabled = controls === 'ending' || (controls === 'start' && !canStart);
+  const iconSize = Math.round(size * 0.2);
 
   return (
-    // The frame is only as tall as the globe canvas. The orbit and microphone
-    // only appear during a call and overflow it, so the heading can sit close
-    // to the globe the rest of the time.
-    <div
-      ref={frame}
-      className="mb-5 flex w-full items-center justify-center"
-      style={{ height: globeSize }}
-    >
-      <div ref={ref} className="relative isolate shrink-0" style={{ width: size, height: size }}>
-        {/* Dashed orbit, present only during a call. */}
-        <svg
-          aria-hidden="true"
-          className={clsx(
-            'pointer-events-none absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 overflow-visible text-stone-50 transition-opacity duration-500 motion-reduce:transition-none',
-            inCall ? 'opacity-15' : 'opacity-0',
-          )}
-          width={orbitRadius * 2}
-          height={orbitRadius * 2}
-        >
-          <circle
-            cx={orbitRadius}
-            cy={orbitRadius}
-            r={orbitRadius - 0.5}
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1"
-            strokeDasharray="8 8"
-          />
-        </svg>
-
-        {/* The globe starts and stops the call. The button is clipped to the
-            sphere so clicks beside it fall through to the stage. */}
-        <button
-          type="button"
-          className={clsx(
-            'peer absolute top-1/2 left-1/2 z-10 -translate-x-1/2 -translate-y-1/2 rounded-full disabled:cursor-not-allowed',
-            controls === 'start' && canStart && 'orb-pulse',
-          )}
-          style={{ width: hitSize, height: hitSize }}
-          disabled={disabled}
-          aria-label={centerLabels[controls]}
-          onClick={controls === 'start' ? onStart : onStop}
-        />
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-stone-900/40"
-          style={{ width: hitSize, height: hitSize }}
-        />
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 transition-transform duration-300 peer-enabled:peer-hover:scale-105 peer-enabled:peer-active:scale-95 motion-reduce:transition-none"
-        >
-          <Globe size={globeSize} active={inCall || busy} getLevel={getLevel} />
-        </div>
-        <div
-          aria-hidden="true"
-          className={clsx(
-            'pointer-events-none absolute top-1/2 left-1/2 z-10 flex -translate-x-1/2 -translate-y-1/2 items-center justify-center transition-transform duration-300 peer-enabled:peer-hover:scale-110 peer-enabled:peer-active:scale-95 motion-reduce:transition-none',
-            disabled && controls === 'start'
-              ? 'text-stone-500'
-              : 'text-orange-500 drop-shadow-[0_0_4px_var(--color-orange-500)]',
-          )}
-          style={{ width: hitSize, height: hitSize }}
-        >
-          <Icon
-            className={clsx(busy && 'motion-safe:animate-spin')}
-            style={{ width: iconSize, height: iconSize }}
-            strokeWidth={1.5}
-          />
-        </div>
-
-        {/* Connector and microphone control on the orbit. */}
-        <svg
-          aria-hidden="true"
-          className={clsx(
-            'pointer-events-none absolute w-0.5 -translate-x-1/2 overflow-visible transition-opacity duration-200 motion-reduce:transition-none',
-            inCall ? 'opacity-100' : 'opacity-0',
-          )}
-          style={{ left: center, top: connectorTop, height: connectorHeight }}
-        >
-          <line x1="1" y1="0" x2="1" y2="100%" className="orb-connector" />
-        </svg>
+    <div ref={frame} className="mb-5 flex w-full justify-center" aria-hidden="true">
+      <div ref={ref} className="relative shrink-0" style={{ width: size, height: size }}>
+        <Globe size={size} active={inCall || busy} getLevel={getLevel} />
         <div
           className={clsx(
-            'absolute z-20 -translate-x-1/2 -translate-y-1/2 transition-opacity duration-200 motion-reduce:transition-none',
-            inCall ? 'opacity-100' : 'pointer-events-none opacity-0',
+            'absolute inset-0 flex items-center justify-center transition-colors duration-300 motion-reduce:transition-none',
+            inCall ? 'text-orange-500' : busy ? 'text-stone-300' : 'text-stone-400',
           )}
-          style={{ left: center, top: controlTop }}
-          // Hidden controls leave the accessibility tree instead of fading only.
-          inert={!inCall ? true : undefined}
         >
-          <button
-            type="button"
-            onClick={onMute}
-            aria-label={muted ? 'Unmute microphone' : 'Mute microphone'}
-            aria-pressed={muted}
-            title={muted ? 'Unmute microphone' : 'Mute microphone'}
-            className={clsx(
-              'flex items-center justify-center rounded-full border bg-stone-900 transition-colors motion-reduce:transition-none',
-              muted
-                ? 'border-white/10 text-orange-500 hover:bg-stone-800'
-                : 'border-white/20 text-stone-50 hover:bg-stone-800',
-            )}
-            style={{ width: controlSize, height: controlSize }}
-          >
-            {muted ? (
-              <MicOff className="size-5" aria-hidden="true" />
-            ) : (
-              <Mic className="size-5" aria-hidden="true" />
-            )}
-          </button>
+          {busy ? (
+            <LoaderCircle
+              className="motion-safe:animate-spin"
+              style={{ width: iconSize, height: iconSize }}
+              strokeWidth={1.5}
+            />
+          ) : (
+            <AudioLines style={{ width: iconSize, height: iconSize }} strokeWidth={1.5} />
+          )}
         </div>
       </div>
     </div>

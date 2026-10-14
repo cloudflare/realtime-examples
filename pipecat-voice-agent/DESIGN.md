@@ -171,8 +171,8 @@ The palette is stone neutrals with one accent.
 - **Primary (orange-700):** the only accent. Use it for the single primary
   action on a screen, the brand icon tile (orange-700 on orange-50), and the
   assistant's name in the transcript. On dark stage surfaces use orange-500 for
-  live indicators: the voice orb's rim, ticks, and play or stop control, the
-  glyph field under the pointer, and the microphone level bars.
+  live indicators: the voice orb's rim, ticks, and center icon during a call,
+  the glyph field under the pointer, and the microphone level bars.
 - **Neutral (stone-100):** page background. Panels are white with stone-200
   borders; the status bar and notes use stone-50.
 - **Text:** stone-900 for primary text, stone-600 for secondary and helper
@@ -260,10 +260,10 @@ pills or mix sharp and rounded corners in one view.
   counts are mono chips or pills on the right.
 - **Voice stage:** the tile's centerpiece is a dotted globe drawn on a canvas
   with a thin orange-500 rim and a ring of fine ticks outside it that open
-  into an equalizer with the call audio. The globe is also the start and stop
-  control, with a play or stop icon at its center. During a call a dashed
-  white/15 orbit surrounds it with the microphone control at the top, joined
-  by a dashed connector. Behind it, a field of monospace glyphs in stone-50 at
+  into an equalizer with the call audio. It is decorative: the controls stay
+  in the row under the stage, and a sound-wave icon at its center turns
+  orange-500 during a call. The globe rests on a still frame and only animates
+  while a call is live. Behind it, a field of monospace glyphs in stone-50 at
   low opacity clears around the globe, fades toward the edges, and brightens
   to orange-500 under the pointer. Both canvases take their colors from the
   palette through the custom properties in `styles.css` and render still

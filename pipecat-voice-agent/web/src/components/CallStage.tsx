@@ -17,8 +17,6 @@ export function CallStage({
   toolsEnabled,
   maxCallSeconds,
   startControl,
-  canStart,
-  onStart,
   onStop,
   onMute,
   onResume,
@@ -28,9 +26,6 @@ export function CallStage({
   toolsEnabled: boolean;
   maxCallSeconds?: number;
   startControl: ReactNode;
-  /** True when the start control is usable, so the orb can start a call too. */
-  canStart: boolean;
-  onStart: () => void;
   onStop: () => void;
   onMute: () => void;
   onResume: () => void;
@@ -62,11 +57,6 @@ export function CallStage({
             controls={stage.controls}
             userLevel={view.userLevel}
             agentLevel={view.agentLevel}
-            muted={view.muted}
-            canStart={canStart}
-            onStart={onStart}
-            onStop={onStop}
-            onMute={onMute}
           />
           <h1 className="max-w-md text-2xl leading-tight font-semibold tracking-tight text-balance text-stone-50 sm:text-3xl">
             {stage.heading}

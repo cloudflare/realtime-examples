@@ -68,8 +68,6 @@ export function VoiceRoom({
           name={name}
           toolsEnabled={settings.tools_enabled}
           maxCallSeconds={maxCallSeconds}
-          canStart={session.kind === 'ready' && settings.name.trim() !== ''}
-          onStart={start}
           onStop={onStop}
           onMute={onMute}
           onResume={onResume}
