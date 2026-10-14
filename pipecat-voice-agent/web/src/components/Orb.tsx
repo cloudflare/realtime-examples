@@ -1,15 +1,15 @@
 import clsx from 'clsx';
 import { LoaderCircle, Mic, MicOff, Play, Square } from 'lucide-react';
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type Ref } from 'react';
+import { resolveStageColor, rgbWithAlpha, stageFallbacks } from '../lib/canvas-theme';
 import type { StageView } from '../voice/model';
 
 /*
- * The voice orb: a dotted globe drawn on a canvas, ringed by an orange
- * equalizer that opens up with the call audio. During a call a dashed orbit
- * appears around it with the microphone control at the top, and the globe
- * itself starts or stops the call. The globe adopts its colors from the
- * Tailwind palette through the `.orb` custom properties in styles.css, so
- * the canvas and the rest of the stage stay in step.
+ * The voice orb: a dotted globe drawn on a canvas, ringed by fine orange
+ * ticks that open into an equalizer with the call audio. During a call a
+ * dashed orbit appears around it with the microphone control at the top, and
+ * the globe itself starts or stops the call. The canvas adopts its colors from
+ * the Tailwind palette through the `.orb` custom properties in styles.css.
  */
 
 // Geometry is expressed against the reference widget size and scaled down
@@ -21,43 +21,16 @@ const CONTROL_RATIO = 66 / REFERENCE_SIZE;
 const MIN_CONTROL_SIZE = 44;
 const MIN_SIZE = 200;
 const MAX_SIZE = 320;
-
-type RgbColor = readonly [red: number, green: number, blue: number];
-
-const fallbackColors = {
-  accent: [255, 105, 0],
-  front: [250, 250, 249],
-  back: [168, 162, 158],
-} satisfies Record<string, RgbColor>;
-
-function rgbWithAlpha([red, green, blue]: RgbColor, alpha: number) {
-  return `rgb(${red} ${green} ${blue} / ${alpha})`;
-}
-
-/**
- * Resolves a CSS color from the orb's custom properties into RGB components
- * for the canvas. Tailwind's palette is defined in OKLCH, which the canvas
- * API cannot modulate directly, so the browser converts it: assigning a
- * color to `fillStyle` and reading it back yields a normalized hex string.
- */
-function readColor(
-  element: HTMLElement,
-  property: string,
-  context: CanvasRenderingContext2D,
-  fallback: RgbColor,
-): RgbColor {
-  const value = getComputedStyle(element).getPropertyValue(property).trim();
-  if (!value) return fallback;
-  context.fillStyle = '#010203';
-  context.fillStyle = value;
-  const hex = /^#([\da-f]{6})/i.exec(String(context.fillStyle))?.[1];
-  if (!hex || hex === '010203') return fallback;
-  return [
-    Number.parseInt(hex.slice(0, 2), 16),
-    Number.parseInt(hex.slice(2, 4), 16),
-    Number.parseInt(hex.slice(4, 6), 16),
-  ];
-}
+// The sphere's radius as a share of the canvas; the glow and ticks use the rest.
+const SPHERE_FRACTION = 0.36;
+const GLOW_RADIUS = 1.38;
+// The call measures levels with an 8x gain that suits the microphone meter.
+// The globe was tuned for gentler input (2.6x for the person and 3.4x for the
+// assistant), so levels are scaled back before they reach it.
+const USER_LEVEL_SCALE = 2.6 / 8;
+const AGENT_LEVEL_SCALE = 3.4 / 8;
+// Caps the equalizer so loud input never swallows the rim and orbit.
+const MAX_AMPLITUDE = 1.3;
 
 /** The animated globe. `getLevel` is read every frame, so audio never forces a render. */
 function Globe({
@@ -87,15 +60,15 @@ function Globe({
     canvas.height = size * dpr;
     const cx = canvas.width / 2;
     const cy = canvas.height / 2;
-    const R = canvas.width * 0.33;
+    const R = canvas.width * SPHERE_FRACTION;
     const tilt = (-20 * Math.PI) / 180;
     const sinT = Math.sin(tilt);
     const cosT = Math.cos(tilt);
 
     const colors = {
-      accent: readColor(canvas, '--orb-accent', ctx, fallbackColors.accent),
-      front: readColor(canvas, '--orb-dot', ctx, fallbackColors.front),
-      back: readColor(canvas, '--orb-dot-back', ctx, fallbackColors.back),
+      accent: resolveStageColor(canvas, '--stage-accent', stageFallbacks.accent),
+      front: resolveStageColor(canvas, '--stage-ink', stageFallbacks.ink),
+      back: resolveStageColor(canvas, '--stage-ink-soft', stageFallbacks.inkSoft),
     };
 
     const dots: number[][] = [];
@@ -132,7 +105,7 @@ function Globe({
       const ry = time * (live ? 0.00018 : 0.00008) - 0.5;
 
       // Rim glow.
-      const glowRadius = R * 1.5;
+      const glowRadius = R * GLOW_RADIUS;
       const glow = ctx.createRadialGradient(cx, cy, R * 0.86, cx, cy, glowRadius);
       glow.addColorStop(0, rgbWithAlpha(colors.accent, 0));
       glow.addColorStop(0.32, rgbWithAlpha(colors.accent, live ? 0.09 : 0.045));
@@ -144,7 +117,7 @@ function Globe({
       ctx.fill();
       ctx.globalCompositeOperation = 'source-over';
 
-      // Faint rim.
+      // Thin rim.
       ctx.beginPath();
       ctx.arc(cx, cy, R * 1.004, 0, 7);
       ctx.strokeStyle = rgbWithAlpha(colors.accent, live ? 0.62 : 0.52);
@@ -170,11 +143,11 @@ function Globe({
         }
       }
 
-      // Audio-reactive radial equalizer. Outside a call the amplitude is
-      // small so the ring reads as a calm baseline; a live call opens it up.
+      // A ring of ticks just outside the rim. Outside a call they barely
+      // move; a live call opens them into an equalizer that follows the audio.
       const bars = 90;
       const base = R * 1.06;
-      const amp = (live ? 0.28 : 0.08) + level * 2.6;
+      const amp = Math.min(MAX_AMPLITUDE, (live ? 0.28 : 0.08) + level * 2.6);
       ctx.globalCompositeOperation = 'lighter';
       ctx.lineCap = 'round';
       for (let i = 0; i < bars; i++) {
@@ -266,17 +239,22 @@ const centerLabels = {
 } satisfies Record<StageView['controls'], string>;
 
 export function Orb({
+  ref,
   controls,
-  level,
+  userLevel,
+  agentLevel,
   muted,
   canStart,
   onStart,
   onStop,
   onMute,
 }: {
+  /** Receives the square widget, which the stage background clears around. */
+  ref?: Ref<HTMLDivElement>;
   controls: StageView['controls'];
-  /** Combined 0..1 audio level of the person and the assistant. */
-  level: number;
+  /** 0..1 audio levels as the call reports them. */
+  userLevel: number;
+  agentLevel: number;
   muted: boolean;
   /** True when the start control is usable, so the globe can start a call too. */
   canStart: boolean;
@@ -286,17 +264,17 @@ export function Orb({
 }) {
   const frame = useRef<HTMLDivElement>(null);
   const size = useWidgetSize(frame);
-  const levelRef = useRef(level);
-  levelRef.current = level;
-  const getLevel = () => levelRef.current;
+  const levels = useRef({ user: userLevel, agent: agentLevel });
+  levels.current = { user: userLevel, agent: agentLevel };
+  const getLevel = () =>
+    Math.max(levels.current.user * USER_LEVEL_SCALE, levels.current.agent * AGENT_LEVEL_SCALE);
 
   const inCall = controls === 'call';
   const busy = controls === 'cancel' || controls === 'ending';
   const scale = (value: number) => Math.round((value * size) / REFERENCE_SIZE);
   const globeSize = Math.round(size * GLOBE_RATIO);
-  // The canvas draws the sphere at a third of its width; the hit target
-  // covers that sphere rather than the glow and equalizer around it.
-  const hitSize = Math.round(globeSize * 0.66);
+  // The hit target covers the sphere rather than the glow and ticks around it.
+  const hitSize = Math.round(globeSize * SPHERE_FRACTION * 2);
   const orbitRadius = scale(ORBIT_RADIUS_RATIO * REFERENCE_SIZE);
   const center = size / 2;
   const controlSize = Math.max(MIN_CONTROL_SIZE, scale(CONTROL_RATIO * REFERENCE_SIZE));
@@ -309,7 +287,7 @@ export function Orb({
 
   return (
     <div ref={frame} className="mb-7 flex w-full justify-center">
-      <div className="relative isolate shrink-0" style={{ width: size, height: size }}>
+      <div ref={ref} className="relative isolate shrink-0" style={{ width: size, height: size }}>
         {/* Dashed orbit, present only during a call. */}
         <svg
           aria-hidden="true"
@@ -359,7 +337,9 @@ export function Orb({
           aria-hidden="true"
           className={clsx(
             'pointer-events-none absolute top-1/2 left-1/2 z-10 flex -translate-x-1/2 -translate-y-1/2 items-center justify-center transition-transform duration-300 peer-enabled:peer-hover:scale-110 peer-enabled:peer-active:scale-95 motion-reduce:transition-none',
-            disabled && controls === 'start' ? 'text-stone-500' : 'text-orange-500',
+            disabled && controls === 'start'
+              ? 'text-stone-500'
+              : 'text-orange-500 drop-shadow-[0_0_4px_var(--color-orange-500)]',
           )}
           style={{ width: hitSize, height: hitSize }}
         >

@@ -171,8 +171,8 @@ The palette is stone neutrals with one accent.
 - **Primary (orange-700):** the only accent. Use it for the single primary
   action on a screen, the brand icon tile (orange-700 on orange-50), and the
   assistant's name in the transcript. On dark stage surfaces use orange-500 for
-  live indicators: the voice orb's rim, equalizer, and play or stop control,
-  and the microphone level bars.
+  live indicators: the voice orb's rim, ticks, and play or stop control, the
+  glyph field under the pointer, and the microphone level bars.
 - **Neutral (stone-100):** page background. Panels are white with stone-200
   borders; the status bar and notes use stone-50.
 - **Text:** stone-900 for primary text, stone-600 for secondary and helper
@@ -258,13 +258,16 @@ pills or mix sharp and rounded corners in one view.
   white/10. Each tile carries a bottom-left chip naming the participant and,
   for the voice agent, what they are doing ("Matt · speaking"). Timers and
   counts are mono chips or pills on the right.
-- **Voice orb:** the stage's centerpiece, a dotted globe drawn on a canvas
-  with an orange-500 rim and a radial equalizer that opens with the call
-  audio. The globe is also the start and stop control, with a play or stop
-  icon at its center. During a call a dashed white/15 orbit surrounds it with
-  the microphone control at the top, joined by a dashed connector. Its colors
-  come from the palette through the `.orb` custom properties in `styles.css`,
-  and it renders one still frame under `prefers-reduced-motion`.
+- **Voice stage:** the tile's centerpiece is a dotted globe drawn on a canvas
+  with a thin orange-500 rim and a ring of fine ticks outside it that open
+  into an equalizer with the call audio. The globe is also the start and stop
+  control, with a play or stop icon at its center. During a call a dashed
+  white/15 orbit surrounds it with the microphone control at the top, joined
+  by a dashed connector. Behind it, a field of monospace glyphs in stone-50 at
+  low opacity clears around the globe, fades toward the edges, and brightens
+  to orange-500 under the pointer. Both canvases take their colors from the
+  palette through the custom properties in `styles.css` and render still
+  frames under `prefers-reduced-motion`.
 - **Status bar:** the panel's last row, stone-50 with a top border, a 2px
   colored marker, the word "Status", and one sentence. The marker pulses only
   while work is in flight. Errors replace the routine message and turn the bar
@@ -282,7 +285,7 @@ pills or mix sharp and rounded corners in one view.
   and microphone access.").
 - Do show one status message at a time, in the status bar.
 - Don't use cream or beige backgrounds, gradients, glass effects, or glows
-  outside the voice orb.
+  outside the voice stage.
 - Don't add kicker labels above headings or text below 12px.
 - Don't animate layout properties; use transforms for level meters and rings,
   and respect `prefers-reduced-motion`.

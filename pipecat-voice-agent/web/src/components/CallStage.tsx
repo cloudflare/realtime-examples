@@ -1,6 +1,7 @@
 import { Headphones, Mic, MicOff, PhoneOff, Volume2, type LucideIcon } from 'lucide-react';
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { describeStage, type CallView, type StageView } from '../voice/model';
+import { AsciiField } from './AsciiField';
 import { Button } from './Button';
 import { Orb } from './Orb';
 
@@ -35,6 +36,7 @@ export function CallStage({
   onResume: () => void;
 }) {
   const stage = describeStage(view, name, toolsEnabled, maxCallSeconds);
+  const orb = useRef<HTMLDivElement>(null);
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
     if (view.phase === 'idle' || view.phase === 'connecting') setElapsed(0);
@@ -53,10 +55,13 @@ export function CallStage({
     <section className="flex flex-col p-3 sm:p-5 lg:h-[42rem]" aria-label="Voice call">
       <div className="flex flex-1 flex-col rounded-xl bg-stone-900 p-3 sm:p-4">
         {/* Extra bottom padding keeps the centered copy clear of the corner chips. */}
-        <div className="relative flex min-h-[22rem] flex-1 flex-col items-center justify-center rounded-lg border border-white/10 bg-stone-800 px-6 pt-10 pb-16 text-center sm:min-h-[26rem] sm:px-10 lg:min-h-0">
+        <div className="relative isolate flex min-h-[22rem] flex-1 flex-col items-center justify-center rounded-lg border border-white/10 bg-stone-800 px-6 pt-10 pb-16 text-center sm:min-h-[26rem] sm:px-10 lg:min-h-0">
+          <AsciiField focalElementRef={orb} active={stage.controls === 'call'} />
           <Orb
+            ref={orb}
             controls={stage.controls}
-            level={Math.max(view.userLevel, view.agentLevel)}
+            userLevel={view.userLevel}
+            agentLevel={view.agentLevel}
             muted={view.muted}
             canStart={canStart}
             onStart={onStart}

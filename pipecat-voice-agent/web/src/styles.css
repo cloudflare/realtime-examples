@@ -24,14 +24,15 @@
 }
 
 /*
- * The voice orb draws on a canvas, which cannot read Tailwind classes, so it
- * resolves these custom properties at mount. Referencing the palette here also
- * makes Tailwind emit the variables.
+ * The stage's canvases (the orb and the glyph field behind it) cannot read
+ * Tailwind classes, so they resolve these custom properties at mount.
+ * Referencing the palette here also makes Tailwind emit the variables.
  */
-.orb {
-  --orb-accent: var(--color-orange-500);
-  --orb-dot: var(--color-stone-50);
-  --orb-dot-back: var(--color-stone-400);
+.orb,
+.ascii-field {
+  --stage-accent: var(--color-orange-500);
+  --stage-ink: var(--color-stone-50);
+  --stage-ink-soft: var(--color-stone-400);
 }
 
 /* A slow pulse on the globe's edge invites the first start. */
