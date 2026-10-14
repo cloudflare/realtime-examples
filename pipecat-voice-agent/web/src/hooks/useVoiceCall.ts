@@ -18,8 +18,11 @@ export function useVoiceCall(authenticated: boolean) {
   useEffect(() => {
     if (authenticated) void call.recover();
   }, [call, authenticated]);
+  // Warming starts when the session is ready and again as each call ends,
+  // so the next call is warm even if the person clicks without hovering.
+  const resting = view.phase === 'idle' || view.phase === 'ended';
   useEffect(() => {
-    if (!authenticated) return;
+    if (!authenticated || !resting) return;
     const warm = () => {
       if (document.visibilityState === 'visible') call.warm();
     };
@@ -30,6 +33,6 @@ export function useVoiceCall(authenticated: boolean) {
       clearInterval(timer);
       document.removeEventListener('visibilitychange', warm);
     };
-  }, [call, authenticated]);
+  }, [call, authenticated, resting]);
   return { call, view };
 }
