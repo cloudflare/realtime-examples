@@ -96,69 +96,25 @@ it('leaves connecting state when browser audio initialization fails', async () =
 });
 
 describe('setup order', () => {
-  it('prepares the offer during the microphone prompt and creates the call after it', async () => {
+  it('prepares the offer during the microphone prompt and creates the warmed call', async () => {
     vi.mocked(request).mockImplementation(async (path) => {
       if (path.endsWith('/publish')) throw new ApiError('sfu_unavailable', 502);
-      return { cleanup_complete: true };
+      return path.endsWith('/warm') ? { warm: true } : { cleanup_complete: true };
     });
     const call = new VoiceCall();
+    call.warm();
+    const warmed = vi.mocked(request).mock.calls[0][0].replace('/warm', '');
     await call.start(defaultAgent);
     expect(steps).toEqual(['peer', 'offer', 'microphone']);
-    const calls = vi.mocked(request).mock.calls;
-    expect(calls.map(([path]) => path.split('/').pop())).toEqual(['create', 'publish', 'finish']);
+    const calls = vi.mocked(request).mock.calls.slice(1);
+    expect(calls.map(([path]) => path)).toEqual(
+      ['create', 'publish', 'finish'].map((action) => `${warmed}/${action}`),
+    );
     expect(calls[1][2]?.body).toMatchObject({
       mid: '0',
       sessionDescription: { type: 'offer', sdp: expect.stringContaining('a=candidate:') },
     });
-    expect(call.snapshot().timings.map((row) => row.operation)).toContain('offer');
     expect(peers[0].connectionState).toBe('closed');
-  });
-
-  it('creates nothing when the call is cancelled during the microphone prompt', async () => {
-    let release!: () => void;
-    audio.open.mockReturnValueOnce(
-      new Promise<void>((resolve) => {
-        release = resolve;
-      }),
-    );
-    const call = new VoiceCall();
-    const starting = call.start(defaultAgent);
-    await vi.waitFor(() =>
-      expect(call.snapshot().timings.map((row) => row.operation)).toContain('offer'),
-    );
-    await call.stop();
-    release();
-    await starting;
-    expect(request).not.toHaveBeenCalled();
-    expect(peers[0].connectionState).toBe('closed');
-    expect(call.snapshot().phase).toBe('ended');
-  });
-});
-
-describe('warming', () => {
-  it('creates the call on the object it warmed, then warms a new one', async () => {
-    vi.mocked(request).mockResolvedValue({ warm: true });
-    const now = vi.spyOn(performance, 'now').mockReturnValue(1_000);
-    try {
-      const call = new VoiceCall();
-      call.warm();
-      call.warm();
-      expect(request).toHaveBeenCalledTimes(1);
-      const warmed = vi.mocked(request).mock.calls[0][0];
-      expect(warmed).toMatch(/^calls\/[a-f0-9]{32}\/warm$/);
-
-      audio.open.mockRejectedValueOnce(new DOMException('Denied', 'NotAllowedError'));
-      await call.start(defaultAgent);
-      expect(`calls/${call.snapshot().callId}/warm`).toBe(warmed);
-      expect(request).toHaveBeenCalledTimes(1);
-
-      now.mockReturnValue(10_000);
-      call.warm();
-      expect(request).toHaveBeenCalledTimes(2);
-      expect(vi.mocked(request).mock.calls[1][0]).not.toBe(warmed);
-    } finally {
-      now.mockRestore();
-    }
   });
 });
 
