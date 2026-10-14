@@ -395,17 +395,3 @@ class VoiceCall(DurableObject):
                 await self.ctx.storage.deleteAlarm()
                 return
             await self.finish("session_timeout")
-
-    async def webSocketMessage(self, ws, message):
-        if self.engine:
-            await self.engine.webSocketMessage(ws, message)
-        else:
-            ws.close(1011, "Call ended")
-
-    async def webSocketClose(self, ws, code, reason, wasClean):
-        if self.engine:
-            await self.engine.webSocketClose(ws, code, reason, wasClean)
-
-    async def webSocketError(self, ws, error):
-        if self.engine:
-            await self.engine.webSocketError(ws, error)

@@ -20,6 +20,9 @@ from services.stt import AudioInputBacklog
 from transport.auth import AdapterAuth
 from transport.codec import AudioConverter, decode_packet, encode_packet
 
+# Four seconds of 20 ms SFU packets, matching the recognizer's own queue limit.
+MAX_QUEUED_PACKETS = 200
+
 
 class VoiceEngine:
     def __init__(self, ctx, env, config, on_stop, is_present, *, call_id, owner_id):
@@ -48,6 +51,10 @@ class VoiceEngine:
         self.cleanup_complete = False
         self.input_disconnected_at = None
         self.attach_deadline = None
+        # Adapter sockets by role, each with the listeners added to it.
+        self.media = {}
+        self.media_listeners = {}
+        self.media_input = asyncio.Queue(maxsize=MAX_QUEUED_PACKETS)
         self.client_events = []
         self.event_sequence = 0
         self.events_changed = asyncio.Event()
@@ -93,8 +100,8 @@ class VoiceEngine:
     def sockets(self, role=None):
         return [
             ws
-            for ws in self.ctx.getWebSockets()
-            if ws.readyState == 1 and (role is None or ws.deserializeAttachment() == role)
+            for name, ws in self.media.items()
+            if ws.readyState == 1 and (role is None or name == role)
         ]
 
     def _ready(self):
@@ -193,6 +200,7 @@ class VoiceEngine:
         await self.flux.start()
         self.attach_deadline = time.monotonic() + 30
         self.background(self.watch_session(), "voice-session-watchdog")
+        self.background(self.receive_audio(), "voice-media-input")
         base = origin.replace("https://", "wss://", 1).replace("http://", "ws://", 1)
         return {
             role: f"{base}/media/{call_id}/{role}?token={media_token}"
@@ -208,8 +216,25 @@ class VoiceEngine:
         if self.sockets(role):
             return Response("Already connected", status=409)
         client, server = WebSocketPair.new()
-        self.ctx.acceptWebSocket(server)
-        server.serializeAttachment(role)
+        # The standard API, not hibernation: the call's tasks keep this object
+        # in memory anyway, and hibernation turns every 20 ms packet into its
+        # own invocation and log event.
+        self._release_socket(role)
+        server.accept()
+        server.binaryType = "arraybuffer"
+        listeners = []
+        for name, callback in (
+            ("message", self._on_media_message),
+            ("close", self._on_media_close),
+            ("error", self._on_media_error),
+        ):
+            proxy = create_proxy(
+                lambda event, callback=callback, ws=server: callback(role, ws, event)
+            )
+            server.addEventListener(name, proxy)
+            listeners.append((name, proxy))
+        self.media[role] = server
+        self.media_listeners[role] = (server, listeners)
         if role == "input":
             self.input_disconnected_at = None
         self.event("socket_opened", role=role)
@@ -224,33 +249,50 @@ class VoiceEngine:
         )
         return Response(None, status=101, web_socket=client)
 
-    async def webSocketMessage(self, ws, message):
+    def _release_socket(self, role):
+        entry = self.media_listeners.pop(role, None)
+        if entry:
+            ws, listeners = entry
+            for name, proxy in listeners:
+                ws.removeEventListener(name, proxy)
+                proxy.destroy()
+
+    def _on_media_message(self, role, ws, event):
         if not self.active:
             return
-        role = ws.deserializeAttachment()
+        message = event.data
         if isinstance(message, str):
             self.fail_call("adapter_protocol", ValueError("Expected a binary SFU packet"))
-            return
-        if role != "input":
+        elif role != "input":
             self.fail_call("adapter_protocol", ValueError("Audio arrived on the wrong connection"))
-            return
-        try:
+        else:
+            # Listeners cannot await, so packets queue here and one task hands
+            # them to the recognizer in arrival order.
             raw = message.to_bytes() if hasattr(message, "to_bytes") else bytes(message)
-            packet = decode_packet(raw)
-            pcm = self.converter.incoming(packet["payload"])
-            size = len(packet["payload"])
-            self.stats["input_packets"] += 1
-            self.stats["input_pcm_bytes"] += size
-            if pcm:
-                await self.pipeline_input.queue_audio(pcm)
-        except AudioInputBacklog as exc:
-            self.fail_call("audio_input_backlog", exc)
-        except Exception as exc:
-            self.fail_call("audio_input", exc)
+            try:
+                self.media_input.put_nowait(raw)
+            except asyncio.QueueFull:
+                self.fail_call("audio_input_backlog", AudioInputBacklog("Media input is full"))
 
-    async def webSocketClose(self, ws, code, reason, wasClean):
-        role = ws.deserializeAttachment()
-        self.event("socket_closed", role=role, code=int(code))
+    async def receive_audio(self):
+        while self.active:
+            raw = await self.media_input.get()
+            try:
+                packet = decode_packet(raw)
+                pcm = self.converter.incoming(packet["payload"])
+                self.stats["input_packets"] += 1
+                self.stats["input_pcm_bytes"] += len(packet["payload"])
+                if pcm:
+                    await self.pipeline_input.queue_audio(pcm)
+            except AudioInputBacklog as exc:
+                self.fail_call("audio_input_backlog", exc)
+                return
+            except Exception as exc:
+                self.fail_call("audio_input", exc)
+                return
+
+    def _on_media_close(self, role, ws, event):
+        self.event("socket_closed", role=role, code=int(event.code))
         try:
             ws.close(1000, "Voice connection closed")
         except Exception:
@@ -263,8 +305,7 @@ class VoiceEngine:
         else:
             self._stop_soon("output_disconnected")
 
-    async def webSocketError(self, ws, error):
-        role = ws.deserializeAttachment()
+    def _on_media_error(self, role, ws, event):
         self.event("socket_error", role=role)
         if self.active and role == "input":
             self.input_disconnected_at = (
@@ -344,6 +385,8 @@ class VoiceEngine:
                 ws.close(1000, "Voice session ended")
             except Exception:
                 pass
+        for role in list(self.media_listeners):
+            self._release_socket(role)
         self.pipeline_ready = False
         self.stats["cleanup_errors"] = cleanup_errors
         self.cleanup_complete = not cleanup_errors

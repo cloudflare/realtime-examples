@@ -30,7 +30,6 @@ def prepared(monkeypatch):
 async def active_call(ctx, env, owner_cookie):
     call = VoiceCall(ctx, env)
     await call.fetch(Request(BASE + "/create", {}, cookie=owner_cookie))
-    ctx.getWebSockets = lambda: []
     call.engine = VoiceEngine(
         ctx,
         env,
