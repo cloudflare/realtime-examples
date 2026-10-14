@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { request } from '../../web/src/lib/api';
+import { ApiError, request } from '../../web/src/lib/api';
 import { defaultAgent } from '../../web/src/lib/contracts';
 import { VoiceCall } from '../../web/src/voice/call';
 
@@ -14,9 +14,11 @@ vi.mock('../../web/src/voice/audio', () => ({
     constructor() {
       audio.construct();
     }
+    outgoing = { stream: { getAudioTracks: () => [{}] } };
     open = audio.open;
     stopCapture = audio.stopCapture;
     close = audio.close;
+    muteMicrophone = vi.fn();
   },
 }));
 vi.mock('../../web/src/lib/api', async (importOriginal) => ({
@@ -26,6 +28,38 @@ vi.mock('../../web/src/lib/api', async (importOriginal) => ({
 
 const pendingKey = 'voice-pending-call';
 let storage: Map<string, string>;
+// The order in which setup touches the peer connection and the microphone.
+let steps: string[];
+let peers: Peer[];
+
+/** Gathers one host candidate as soon as the offer is applied. */
+class Peer extends EventTarget {
+  connectionState = 'new';
+  iceGatheringState = 'gathering';
+  localDescription?: RTCSessionDescriptionInit & { sdp: string };
+  constructor() {
+    super();
+    steps.push('peer');
+    peers.push(this);
+  }
+  addTransceiver() {
+    return { mid: '0', setCodecPreferences: () => {} };
+  }
+  async createOffer() {
+    steps.push('offer');
+    return { type: 'offer' as const, sdp: 'v=0\r\n' };
+  }
+  async setLocalDescription(description: RTCSessionDescriptionInit) {
+    this.localDescription = {
+      ...description,
+      sdp: `${description.sdp}a=candidate:1 1 udp 1 192.0.2.1 10000 typ host\r\n`,
+    };
+  }
+  async setRemoteDescription() {}
+  close() {
+    this.connectionState = 'closed';
+  }
+}
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -36,6 +70,14 @@ beforeEach(() => {
     removeItem: (key: string) => storage.delete(key),
   });
   audio.close.mockResolvedValue();
+  steps = [];
+  peers = [];
+  audio.open.mockImplementation(async () => {
+    steps.push('microphone');
+  });
+  vi.stubGlobal('RTCPeerConnection', Peer);
+  vi.stubGlobal('RTCRtpSender', { getCapabilities: () => null });
+  vi.spyOn(console, 'info').mockImplementation(() => {});
 });
 afterEach(() => vi.unstubAllGlobals());
 
@@ -51,6 +93,46 @@ it('leaves connecting state when browser audio initialization fails', async () =
     error: expect.stringContaining('Audio could not be initialized'),
   });
   expect(request).not.toHaveBeenCalled();
+});
+
+describe('setup order', () => {
+  it('prepares the offer during the microphone prompt and creates the call after it', async () => {
+    vi.mocked(request).mockImplementation(async (path) => {
+      if (path.endsWith('/publish')) throw new ApiError('sfu_unavailable', 502);
+      return { cleanup_complete: true };
+    });
+    const call = new VoiceCall();
+    await call.start(defaultAgent);
+    expect(steps).toEqual(['peer', 'offer', 'microphone']);
+    const calls = vi.mocked(request).mock.calls;
+    expect(calls.map(([path]) => path.split('/').pop())).toEqual(['create', 'publish', 'finish']);
+    expect(calls[1][2]?.body).toMatchObject({
+      mid: '0',
+      sessionDescription: { type: 'offer', sdp: expect.stringContaining('a=candidate:') },
+    });
+    expect(call.snapshot().timings.map((row) => row.operation)).toContain('offer');
+    expect(peers[0].connectionState).toBe('closed');
+  });
+
+  it('creates nothing when the call is cancelled during the microphone prompt', async () => {
+    let release!: () => void;
+    audio.open.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const call = new VoiceCall();
+    const starting = call.start(defaultAgent);
+    await vi.waitFor(() =>
+      expect(call.snapshot().timings.map((row) => row.operation)).toContain('offer'),
+    );
+    await call.stop();
+    release();
+    await starting;
+    expect(request).not.toHaveBeenCalled();
+    expect(peers[0].connectionState).toBe('closed');
+    expect(call.snapshot().phase).toBe('ended');
+  });
 });
 
 describe('warming', () => {

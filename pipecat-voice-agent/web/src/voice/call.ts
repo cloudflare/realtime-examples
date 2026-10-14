@@ -141,6 +141,17 @@ export class VoiceCall {
       };
       pending = run;
       this.current = run;
+      // The offer needs only the outgoing track, which the audio graph already
+      // has, so network setup runs while the person answers the microphone
+      // prompt. The call itself is created only once the microphone is open.
+      const { pc, transceiver } = this.connect(run);
+      const offer = run.timings.measure('offer', 'Prepare the audio connection', async () => {
+        await pc.setLocalDescription(await pc.createOffer());
+        return firstCandidate(pc, 'offer', run.abort.signal);
+      });
+      // Awaited before publishing. A microphone failure must not leave its
+      // rejection unhandled.
+      offer.catch(() => undefined);
       await this.operation(run, 'Open microphone', 'microphone', () =>
         run.audio.open(deviceId, (userLevel, agentLevel) => {
           if (this.current === run && !run.cancelled)
@@ -162,42 +173,12 @@ export class VoiceCall {
           return result;
         }),
       );
-      const pc = new RTCPeerConnection({
-        iceServers: [{ urls: 'stun:stun.cloudflare.com:3478' }],
-        bundlePolicy: 'max-bundle',
-      });
-      run.pc = pc;
-      pc.ontrack = (event) => {
-        if (!run.cancelled) void run.audio.receive(event.track);
-      };
-      pc.onconnectionstatechange = () => {
-        clearTimeout(run.disconnectTimer);
-        if (run.cancelled || this.view.phase !== 'connected') return;
-        if (pc.connectionState === 'failed')
-          void this.fail(run, 'The audio connection was lost. Please start a new call.');
-        if (pc.connectionState === 'disconnected')
-          run.disconnectTimer = setTimeout(() => {
-            if (pc.connectionState === 'disconnected')
-              void this.fail(run, 'The audio connection was lost. Please start a new call.');
-          }, 8000);
-      };
-      const track = run.audio.outgoing.stream.getAudioTracks()[0];
-      const transceiver = pc.addTransceiver(track, {
-        direction: 'sendonly',
-        streams: [run.audio.outgoing.stream],
-      });
-      const opus = RTCRtpSender.getCapabilities('audio')?.codecs.filter(
-        (codec) => codec.mimeType.toLowerCase() === 'audio/opus',
-      );
-      if (opus?.length) transceiver.setCodecPreferences(opus);
       const published = await this.operation(
         run,
         'Connect your microphone',
         'publish',
         async () => {
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          const description = await firstCandidate(pc, 'offer', run.abort.signal);
+          const description = await offer;
           this.check(run);
           const result = await this.control(run, () =>
             request(`calls/${run.id}/publish`, negotiationSchema, {
@@ -214,7 +195,7 @@ export class VoiceCall {
       await this.operation(run, 'Connect to the audio service', 'connect_publish', () =>
         connected(pc, run.abort.signal),
       );
-      const attached = await this.operation(run, 'Prepare your assistant', 'attach', () =>
+      const attached = await this.operation(run, 'Connect your assistant', 'attach', () =>
         this.control(run, () =>
           request(`calls/${run.id}/attach`, attachedSchema, { body: {}, timeout: 85_000 }),
         ),
@@ -266,6 +247,39 @@ export class VoiceCall {
         });
       }
     }
+  }
+
+  /** Creates the peer connection that sends the outgoing track and plays the assistant. */
+  private connect(run: Run) {
+    const pc = new RTCPeerConnection({
+      iceServers: [{ urls: 'stun:stun.cloudflare.com:3478' }],
+      bundlePolicy: 'max-bundle',
+    });
+    run.pc = pc;
+    pc.ontrack = (event) => {
+      if (!run.cancelled) void run.audio.receive(event.track);
+    };
+    pc.onconnectionstatechange = () => {
+      clearTimeout(run.disconnectTimer);
+      if (run.cancelled || this.view.phase !== 'connected') return;
+      if (pc.connectionState === 'failed')
+        void this.fail(run, 'The audio connection was lost. Please start a new call.');
+      if (pc.connectionState === 'disconnected')
+        run.disconnectTimer = setTimeout(() => {
+          if (pc.connectionState === 'disconnected')
+            void this.fail(run, 'The audio connection was lost. Please start a new call.');
+        }, 8000);
+    };
+    const track = run.audio.outgoing.stream.getAudioTracks()[0];
+    const transceiver = pc.addTransceiver(track, {
+      direction: 'sendonly',
+      streams: [run.audio.outgoing.stream],
+    });
+    const opus = RTCRtpSender.getCapabilities('audio')?.codecs.filter(
+      (codec) => codec.mimeType.toLowerCase() === 'audio/opus',
+    );
+    if (opus?.length) transceiver.setCodecPreferences(opus);
+    return { pc, transceiver };
   }
 
   private async poll(run: Run) {
