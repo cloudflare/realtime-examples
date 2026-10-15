@@ -19,6 +19,10 @@ import type { CallView } from './model';
 const pendingCallKey = 'voice-pending-call';
 // Warming more often than this adds requests without keeping the object any warmer.
 const warmGapMs = 5_000;
+// The assistant's audio can reach the browser in bursts. Without this floor,
+// the browser buffers too little for some bursts and fills the gap with
+// stretched audio, which sounds like a hiccup. It adds under 0.1 s of delay.
+const playoutBufferMs = 250;
 type Run = {
   id: string;
   cancelled: boolean;
@@ -257,6 +261,8 @@ export class VoiceCall {
     });
     run.pc = pc;
     pc.ontrack = (event) => {
+      if ('jitterBufferTarget' in event.receiver)
+        event.receiver.jitterBufferTarget = playoutBufferMs;
       if (!run.cancelled) void run.audio.receive(event.track);
     };
     pc.onconnectionstatechange = () => {
