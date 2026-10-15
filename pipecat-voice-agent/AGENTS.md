@@ -6,6 +6,8 @@ This project uses Python Workers/Pipecat and a React 19/Tailwind CSS 4 frontend.
 
 Source `~/.nvm/nvm.sh` and run `nvm use` when Node is managed by nvm. Follow [the development guide](docs/development.md) for preview, live calls, and checks. Use preview scenarios for UI work that does not need a real call.
 
+To remove the orb, spoken fillers, typing sound, or a tool, follow [Optional features](docs/optional-features.md).
+
 Run `npm run format` and `npm run check` for frontend or documentation changes. Python changes also need `npm run format:python`, `npm run lint:python`, and `npm run test:python` after `uv sync --locked`.
 
 ## Boundaries

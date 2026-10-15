@@ -110,6 +110,7 @@ examples:
     architecture: pipecat-voice-agent/README.md
     credential_boundary: server
     known_limitations:
+      - A call can take a few seconds to connect while the agent starts and the SFU attaches its audio streams.
       - Calls do not resume after a Worker restart or browser disconnect.
       - The shared access code is an evaluation seam; identity integration is a deployment responsibility.
       - The SFU must reach the media adapter endpoints without a Cloudflare Access login challenge.
