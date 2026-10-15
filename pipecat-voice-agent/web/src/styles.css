@@ -1,0 +1,46 @@
+/*! Licenses: /NOTICE.txt and /LICENSES.md */
+@import 'tailwindcss';
+
+/*
+ * The visual system is Tailwind's default palette, shared with the Realtime
+ * video room example: stone neutrals, orange-700 as the single accent, and
+ * sky-600 for focus. See DESIGN.md for the full record.
+ */
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+  button:not(:disabled) {
+    cursor: pointer;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-sky-600);
+    outline-offset: 3px;
+  }
+  ::selection {
+    @apply bg-orange-700/20;
+  }
+}
+
+/*
+ * The orb's canvas cannot read Tailwind classes, so it resolves these custom
+ * properties at mount. Referencing the palette here also makes Tailwind emit
+ * the variables.
+ */
+.orb {
+  --stage-accent: var(--color-orange-500);
+  --stage-ink: var(--color-stone-50);
+  --stage-ink-soft: var(--color-stone-400);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

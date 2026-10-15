@@ -1,0 +1,51 @@
+{
+  "name": "realtime-pipecat-voice-agent",
+  "version": "0.1.0",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "vite --mode ui",
+    "dev:live": "vite --mode live",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --mode live",
+    "test": "vitest run",
+    "check": "npm run format:check && npm test && npm run build",
+    "setup": "python3 scripts/setup.py",
+    "worker:dev": "python3 scripts/worker.py dev",
+    "deploy": "npm run build && python3 scripts/worker.py deploy",
+    "deploy:preview": "npm run build && python3 scripts/worker.py preview && wrangler preview secret bulk .dev.vars",
+    "format": "prettier --write web tests/client docs vendor/README.md \"scripts/*.ts\" \"*.{json,jsonc,ts,md,yml}\"",
+    "format:check": "prettier --check web tests/client docs vendor/README.md \"scripts/*.ts\" \"*.{json,jsonc,ts,md,yml}\"",
+    "lint:python": "uv run ruff check src scripts tests/server && uv run ruff format --check src scripts tests/server",
+    "format:python": "uv run ruff check --fix src scripts tests/server && uv run ruff format src scripts tests/server",
+    "test:python": "uv run pytest -q"
+  },
+  "dependencies": {
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.577.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^22.19.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "prettier": "^3.9.9",
+    "prettier-plugin-tailwindcss": "^0.7.3",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.3",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.148.0"
+  },
+  "overrides": {
+    "sharp": "^0.35.5"
+  }
+}

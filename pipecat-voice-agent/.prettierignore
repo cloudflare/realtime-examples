@@ -1,0 +1,11 @@
+node_modules
+dist
+python_modules
+.venv*
+.wrangler
+vendor/*
+!vendor/README.md
+package-lock.json
+uv.lock
+pylock.toml
+.dev.vars*

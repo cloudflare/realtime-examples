@@ -1,0 +1,5 @@
+REALTIME_APP_ID="your-sfu-app-id"
+REALTIME_AUTH_TOKEN="your-sfu-app-secret"
+APP_PASSWORD="choose-an-internal-evaluation-password"
+SESSION_SECRET="generate-with-python-secrets-token-urlsafe-32"
+

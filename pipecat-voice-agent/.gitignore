@@ -1,0 +1,17 @@
+node_modules/
+dist/
+python_modules/
+.venv*/
+.wrangler/
+.worktrees/
+.dev.vars*
+!.dev.vars.example
+.env*
+!.env.example
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+playwright-report/
+test-results/
+.DS_Store
