@@ -12,6 +12,8 @@ from typing import Any
 from pipecat.audio.mixers.base_audio_mixer import BaseAudioMixer
 from pipecat.frames.frames import (
     Frame,
+    FunctionCallCancelFrame,
+    FunctionCallResultFrame,
     InterruptionFrame,
     MixerControlFrame,
     OutputAudioRawFrame,
@@ -27,6 +29,7 @@ from pipecat.transports.base_transport import TransportParams
 
 from agent.speech_history import SpeechHistory
 from transport.playback import FRAME_BYTES, FRAME_SECONDS, SAMPLE_RATE, PlaybackBudget
+from transport.thinking import ThinkingSound
 
 SILENCE = bytes(FRAME_BYTES)
 
@@ -59,6 +62,7 @@ class NativeVoiceOutput(BaseOutputTransport):
         *,
         playback_budget: PlaybackBudget,
         speech_history: SpeechHistory,
+        thinking: ThinkingSound,
     ):
         super().__init__(
             TransportParams(
@@ -77,6 +81,7 @@ class NativeVoiceOutput(BaseOutputTransport):
         self.control = control
         self.playback_budget = playback_budget
         self.speech_history = speech_history
+        self.thinking = thinking
         self._context_id = None
         self._context_generation = None
         self._context_filler = False
@@ -95,6 +100,7 @@ class NativeVoiceOutput(BaseOutputTransport):
             "accepted_speech_chunks": 0,
             "accepted_nonzero_chunks": 0,
             "idle_silence_chunks": 0,
+            "thinking_chunks": 0,
             "not_ready_silence_chunks": 0,
             "unavailable_speech_chunks": 0,
             "stale_speech_chunks_dropped": 0,
@@ -144,6 +150,9 @@ class NativeVoiceOutput(BaseOutputTransport):
         await self.set_transport_ready(frame)
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+        # Results are tracked on arrival, ahead of the paced audio queue.
+        if isinstance(frame, (FunctionCallResultFrame, FunctionCallCancelFrame)):
+            self.thinking.tool_finished(frame.tool_call_id)
         if isinstance(frame, InterruptionFrame) and direction == FrameDirection.DOWNSTREAM:
             generation = self.control.generation
             self.record["interruption_events"] += 1
@@ -233,8 +242,14 @@ class NativeVoiceOutput(BaseOutputTransport):
             if not valid:
                 audio = SILENCE
                 generation = current
+            elif not filler:
+                self.thinking.reply_started(generation)
         else:
             self.record["idle_silence_chunks"] += 1
+            typed = self.thinking.fill(audio, current, time.monotonic())
+            if typed is not audio:
+                self.record["thinking_chunks"] += 1
+                audio = typed
 
         try:
             self.record["attempted_chunks"] += 1

@@ -24,7 +24,7 @@ from pipecat.utils.errors import ErrorCategory
 from pipecat.workers.runner import WorkerRunner
 
 from agent.config import LLM_MODEL
-from agent.fillers import speak_fillers
+from agent.fillers import SILENT, speak_fillers
 from agent.speech_history import SpeechHistory
 from agent.tools import build_tools
 from services.flux import MAX_TRANSCRIPT_CHARS
@@ -33,6 +33,7 @@ from services.models import get_model
 from services.stt import FluxInput
 from services.tts import WorkersAura
 from transport.output import NativeVoiceOutput
+from transport.thinking import ThinkingSound
 
 MAX_RECENT_PROVIDER_TURNS = 64
 
@@ -201,6 +202,16 @@ async def start_pipeline(owner):
         owner.notify({"type": "speech_failed", "generation": generation})
 
     speak_fillers(llm, tts, owner.control)
+    thinking = ThinkingSound(quiet_tools=SILENT)
+
+    @llm.event_handler("on_function_calls_started")
+    async def on_lookups_started(_service, function_calls):
+        # Lookup frames reach the output only after the filler is synthesized,
+        # so typing starts its wait from the event that queues the filler.
+        for call in function_calls:
+            thinking.tool_started(
+                call.tool_call_id, call.function_name, call.workers_generation, time.monotonic()
+            )
 
     output = NativeVoiceOutput(
         owner,
@@ -208,6 +219,7 @@ async def start_pipeline(owner):
         owner.control,
         playback_budget=tts.playback_budget,
         speech_history=speech_history,
+        thinking=thinking,
     )
     audio_input = FluxInput(owner.flux, owner.stats, owner.control)
     worker = PipelineWorker(

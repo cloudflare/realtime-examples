@@ -10,6 +10,8 @@ Add its presentation to [the conversation registry](../web/src/voice/conversatio
 
 Give it short [filler phrases](../src/agent/fillers.py) to speak while it runs, or mark it silent if it answers almost instantly. Fillers are audio only and stay out of the conversation. Pipecat waits for a playing filler to finish before sending a tool result to the model, so a long phrase delays the answer.
 
+A lookup that runs longer than half a second also gets quiet keyboard typing, which starts after its filler and stops when the reply begins. Silent tools never get it. The keystrokes are a [public-domain recording](../NOTICE.md#sounds) looped by [`thinking.py`](../src/transport/thinking.py); set its volume to 0 to turn the sound off.
+
 Tool handlers need to account for:
 
 - **Cancellation:** let `asyncio.CancelledError` propagate and close network resources. Cancelling a request does not undo a remote write; define idempotency before adding tools that change data.

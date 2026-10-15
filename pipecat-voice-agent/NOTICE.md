@@ -14,3 +14,7 @@ Installed dependencies retain the licenses supplied in their packages.
 ## Weather data
 
 Weather answers are generated summaries of data from [Open-Meteo](https://open-meteo.com/), licensed under [Creative Commons Attribution 4.0 International](https://creativecommons.org/licenses/by/4.0/). Retain the provider credit and license link when sharing those summaries. Open-Meteo does not endorse the generated answers.
+
+## Sounds
+
+The typing loop in `src/transport/keyboard-typing.wav` is cut from ["Computer keyboard typing snippet mono [loop]"](https://freesound.org/s/361639/) by cabled_mess, dedicated to the public domain under [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/).

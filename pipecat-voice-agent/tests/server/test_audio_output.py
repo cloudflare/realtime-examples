@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 from pipecat.frames.frames import (
+    FunctionCallResultFrame,
     InterruptionFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
@@ -39,6 +40,7 @@ from services.models import get_model
 from services.tts import WorkersAura
 from transport.output import NativeVoiceOutput
 from transport.playback import FRAME_BYTES, FRAME_MS, MAX_AUDIO_AHEAD_MS, SAMPLE_RATE
+from transport.thinking import ThinkingSound
 
 
 class AudioReader:
@@ -169,6 +171,7 @@ async def output_pipeline(monkeypatch):
         control,
         playback_budget=tts.playback_budget,
         speech_history=history,
+        thinking=ThinkingSound(),
     )
 
     async def pace():
@@ -378,6 +381,29 @@ async def test_filler_is_heard_but_stays_out_of_the_replys_spoken_prefix(output_
     run.can_play.set()
     await wait_for(lambda: "Planets orbit stars." in run.sink.text)
     assert "One sec" not in str(run.context.get_messages())
+
+
+async def test_typing_fills_the_wait_after_the_filler_until_the_reply(output_pipeline, monkeypatch):
+    run = output_pipeline
+    monkeypatch.setattr("transport.thinking.GRACE_SECONDS", 0)
+    pcm = b"\x01\0" * (FRAME_BYTES // 2)
+    run.responses.extend([AudioReader(pcm * 5), AudioReader(pcm * 5)])
+    run.can_play.set()
+    lookup = dict(function_name="search_web", tool_call_id="search", arguments={})
+    # The pipeline starts the wait from the model's lookup event, not a frame.
+    run.output.thinking.tool_started(
+        "search", "search_web", run.output.control.generation, time.monotonic()
+    )
+    await say_filler(run, "One sec.")
+    await wait_for(lambda: run.output.record["thinking_chunks"] > 3)
+    await run.output.queue_frame(FunctionCallResultFrame(**lookup, result={}))
+    await speak(run, "Here is the answer.")
+    await wait_for(
+        lambda: any(e["type"] == "assistant_response_finished" for e, _ in run.notifications)
+    )
+    typed = run.output.record["thinking_chunks"]
+    await asyncio.sleep(0.05)
+    assert run.output.record["thinking_chunks"] == typed
 
 
 async def test_buffered_speech_waits_for_playback_without_provider_timeout(

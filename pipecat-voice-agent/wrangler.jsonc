@@ -5,6 +5,8 @@
   "compatibility_date": "2026-10-05",
   "compatibility_flags": ["python_workers"],
   "python_modules": { "exclude": ["**/*.pyc", "openai/**", "PIL/**", "**/*.pyi"] },
+  // Uploads the typing loop next to the Python modules that read it.
+  "rules": [{ "type": "Data", "globs": ["transport/*.wav"], "fallthrough": true }],
   "workers_dev": true,
   "ai": { "binding": "AI" },
   "assets": {
