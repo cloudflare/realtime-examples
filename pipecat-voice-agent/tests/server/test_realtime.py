@@ -66,7 +66,11 @@ async def test_missing_item_is_retained_for_retry(env):
     assert resources["adapters"] == ["output"]
 
 
-async def test_gone_session_stops_track_retries_without_dropping_pending_adapters(env, monkeypatch):
+# 410: the session is gone. 425: the browser never connected, as after a failed agent setup.
+@pytest.mark.parametrize("status", [410, 425])
+async def test_gone_session_stops_track_retries_without_dropping_pending_adapters(
+    env, monkeypatch, status
+):
     resources = {"adapters": ["input", "output"], "session_id": "session", "mids": ["0", "1"]}
     fetch = AsyncMock(
         side_effect=[
@@ -82,7 +86,7 @@ async def test_gone_session_stops_track_retries_without_dropping_pending_adapter
                 ),
             ),
             SimpleNamespace(
-                status=410, json=AsyncMock(return_value={"errorCode": "session_error"})
+                status=status, json=AsyncMock(return_value={"errorCode": "session_error"})
             ),
             SimpleNamespace(
                 status=200, json=AsyncMock(return_value={"tracks": [{"adapterId": "output"}]})

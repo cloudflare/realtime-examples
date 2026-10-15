@@ -185,11 +185,13 @@ class Realtime:
             except ApiError:
                 pass
             if (
-                self.last_reply.get("http_status") == 410
+                self.last_reply.get("http_status") in (410, 425)
                 and self.last_reply.get("error_code") == "session_error"
             ):
-                # The session is closed or gone, so its mids cannot be closed
-                # again. Adapter cleanup has its own results and lifetime.
+                # 410: the session is closed or gone, so its mids cannot be
+                # closed again. 425: the browser never connected, so no media
+                # flows and every close is refused. Retrying cannot help either
+                # way. Adapter cleanup has its own results and lifetime.
                 self.resources["mids"] = []
             self.resources["cleanup_replies"]["tracks"] = self.last_reply
             await self.save()
