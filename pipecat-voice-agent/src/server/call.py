@@ -366,6 +366,8 @@ class VoiceCall(DurableObject):
                 engine_clean = False
                 call_log.error("cleanup_failed", stage="engine", **exception_fields(exc))
         media_clean = await self.sfu().cleanup()
+        if self.engine:
+            await self.engine.close_sockets()
         if engine_clean and media_clean:
             self.state["phase"] = "ended"
             # Retain authorization briefly for idempotent Stop, then expire the

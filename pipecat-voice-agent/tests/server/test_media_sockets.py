@@ -139,7 +139,13 @@ async def test_reconnects_closes_and_cleanup_release_the_listeners(engine):
     output.emit("close", code=1000)
     engine.on_stop.assert_called_once_with("output_disconnected")
 
+    # Cleanup closes the input. The output waits for its adapter's removal,
+    # and close_sockets() closes it if that does not happen.
+    replacement = await connect(engine, "output")
     await engine._finish("test_complete")
-    assert second.closed == [1000]
-    assert second.listeners == {} and output.listeners == {}
+    assert second.closed == [1000] and second.listeners == {}
+    assert replacement.closed == [] and replacement.listeners
+    await engine.close_sockets(wait=0)
+    assert replacement.closed == [1000] and replacement.listeners == {}
+    assert output.listeners == {}
     assert engine.sockets() == []

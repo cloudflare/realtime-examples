@@ -320,6 +320,22 @@ class VoiceEngine:
         elif self.active:
             self._stop_soon("socket_error")
 
+    async def close_sockets(self, wait=1):
+        """Closes any socket the media cleanup left open, then drops the listeners."""
+        try:
+            async with asyncio.timeout(wait):
+                while self.sockets():
+                    await asyncio.sleep(0.05)
+        except TimeoutError:
+            pass
+        for ws in self.sockets():
+            try:
+                ws.close(1000, "Voice session ended")
+            except Exception:
+                pass
+        for role in list(self.media_listeners):
+            self._release_socket(role)
+
     async def watch_session(self):
         while self.active:
             await asyncio.sleep(0.5)
@@ -386,13 +402,15 @@ class VoiceEngine:
         except Exception as exc:
             cleanup_errors.append({"stage": "tasks", "type": type(exc).__name__})
             self.fail_call("task_cleanup", exc)
-        for ws in self.sockets():
+        # The output adapter drops its connection right after it answers a
+        # close, which fails that socket's request. Only the input closes here;
+        # removing the output adapter closes the other socket cleanly.
+        for ws in self.sockets("input"):
             try:
                 ws.close(1000, "Voice session ended")
             except Exception:
                 pass
-        for role in list(self.media_listeners):
-            self._release_socket(role)
+        self._release_socket("input")
         self.pipeline_ready = False
         self.stats["cleanup_errors"] = cleanup_errors
         self.cleanup_complete = not cleanup_errors
