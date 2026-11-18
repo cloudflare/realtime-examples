@@ -1,0 +1,86 @@
+[package]
+name = "dimpl"
+authors = ["Martin Algesten <martin@algesten.se>"]
+description = "DTLS 1.2/1.3 implementation (Sans‑IO, Sync)"
+version = "0.9.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/algesten/dimpl"
+readme = "README.md"
+keywords = ["dtls", "tls", "webrtc", "psk"]
+categories = ["network-programming", "cryptography", "security"]
+
+# MSRV
+rust-version = "1.89.0"
+
+[features]
+default = ["aws-lc-rs", "rcgen"]
+
+# Default crypto provider
+aws-lc-rs = ["dep:aws-lc-rs", "dep:ccm", "dep:aes", "_crypto-common"]
+
+# Pure Rust crypto provider
+rust-crypto = [
+            "dep:aes-gcm", "dep:chacha20poly1305", "dep:chacha20", "dep:p256",
+            "dep:p384", "dep:x25519-dalek", "dep:sha2", "dep:hmac", "dep:hkdf",
+            "dep:ecdsa",
+            "dep:ccm", "dep:aes",
+            "_crypto-common"
+]
+
+# Internal for all cryptos
+_crypto-common = ["dep:der", "dep:pkcs8", "dep:sec1", "dep:signature", "dep:spki", "dep:x509-cert"]
+
+# Self-signed certificate generation.
+# rcgen can either use ring or aws-lc-rs. We have decided to use aws-lc-rs to limit the number
+# of crypto libraries we depend upon. If you enable rcgen, you are implicitly also compiling aws-lc-rs.
+# The self-signed certificate comes with a sha256 fingerprint that, where we use aws-lc-rs to compute it.
+# Since we are compiling aws-lc-rs anyway, enabling the feature is no extra cost.
+rcgen = ["dep:rcgen", "aws-lc-rs"]
+
+[dependencies]
+log = "0.4.29"
+nom = { version = "8", default-features = false, features = ["std"] }
+once_cell = "1.21.3"
+rand = "0.10"
+time = { version = "0.3", features = ["formatting"] }
+arrayvec = "0.7.6"
+subtle = "2.6"
+
+der = { version = "0.8", optional = true }
+pkcs8 = { version = "0.11", features = ["pem"], optional = true }
+sec1 = { version = "0.8", optional = true }
+signature = { version = "3", optional = true }
+spki = { version = "0.8", optional = true }
+x509-cert = { version = "0.3", default-features = false, optional = true }
+
+# aws-lc-rs backend
+aws-lc-rs = { version = "^1.16", default-features = false, features = ["aws-lc-sys", "prebuilt-nasm"], optional = true }
+
+# RustCrypto backend
+aes-gcm = { version = "0.11", optional = true }
+p256 = { version = "0.14", optional = true, features = ["ecdh"] }
+p384 = { version = "0.14", optional = true, features = ["ecdh"] }
+sha2 = { version = "0.11", optional = true }
+hmac = { version = "0.13", optional = true }
+hkdf = { version = "0.13", optional = true }
+ecdsa = { version = "0.17", optional = true, features = ["algorithm", "pkcs8"] }
+chacha20poly1305 = { version = "0.11", optional = true }
+chacha20 = { version = "0.10", optional = true }
+ccm = { version = "0.6", default-features = false, optional = true }
+aes = { version = "0.9", optional = true }
+x25519-dalek = { version = "3", optional = true, features = ["getrandom", "static_secrets"] }
+
+# certificate generation
+rcgen = { version = "0.14.7", default-features = false, features = ["aws_lc_rs"], optional = true }
+
+[dev-dependencies]
+openssl = { version = "0.10.80", features = ["vendored"] }
+libc = "0.2"
+env_logger = "0.11.9"
+x509-parser = "0.18"
+bytes = "1"
+
+# wolfssl doesn't build on Windows
+[target.'cfg(not(windows))'.dev-dependencies]
+wolfssl = "8.1.0"

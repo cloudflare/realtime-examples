@@ -15,6 +15,7 @@ pub(crate) fn provider() -> radio_webrtc::CryptoProvider {
     radio_webrtc::CryptoProvider {
         srtp_provider: &srtp::Provider,
         sha1_hmac_provider: &hashes::Hashes,
+        sha1_provider: str0m_rust_crypto::default_provider().sha1_provider,
         sha256_provider: &hashes::Hashes,
         dtls_provider: &dtls::Provider,
     }

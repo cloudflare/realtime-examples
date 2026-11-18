@@ -88,8 +88,6 @@ fn default_crypto_name() -> &'static str {
     return "openssl-dimpl";
     #[cfg(feature = "openssl")]
     return "openssl";
-    #[cfg(feature = "wincrypto-dimpl")]
-    return "wincrypto-dimpl";
     #[cfg(all(feature = "wincrypto", target_os = "windows"))]
     return "wincrypto";
     #[cfg(all(feature = "apple-crypto", target_vendor = "apple"))]
@@ -117,10 +115,10 @@ fn run_direct_handshake(
     let server_crypto_name =
         std::env::var("R_CRYPTO").unwrap_or_else(|_| default_crypto_name().into());
 
-    // wincrypto and openssl only support DTLS 1.2 - skip tests requiring 1.3/Auto.
+    // Native openssl only supports DTLS 1.2 - skip tests requiring 1.3/Auto.
     // Also skip Auto client -> 1.2-only server: dimpl advertises X25519 in the hybrid
     // ClientHello but its DTLS 1.2 engine can't process X25519 in ServerKeyExchange.
-    let dtls12_only = |name: &str| matches!(name, "wincrypto" | "openssl");
+    let dtls12_only = |name: &str| matches!(name, "openssl");
     let needs_13 = |v: DtlsVersion| matches!(v, DtlsVersion::Auto | DtlsVersion::Dtls13);
 
     if (dtls12_only(&client_crypto_name) && needs_13(client_dtls))
@@ -207,8 +205,10 @@ fn run_direct_handshake(
                     &mut rtc,
                     false,
                     client_addr,
-                    remote_ice_ufrag,
-                    remote_ice_pwd,
+                    IceCreds {
+                        ufrag: remote_ice_ufrag,
+                        pass: remote_ice_pwd,
+                    },
                     remote_fingerprint,
                     snap.map(|(_, d)| d),
                     remote_sctp_init,
@@ -218,13 +218,15 @@ fn run_direct_handshake(
                 // Run the event loop with message exchange
                 run_rtc_loop_with_exchange(
                     &mut rtc,
-                    &span,
-                    &server_rx,
-                    &server_tx,
                     &mut timing,
                     false,
-                    &mut packets,
-                    &server_packets_sent_clone,
+                    RtcLoopIo {
+                        span: &span,
+                        incoming: &server_rx,
+                        outgoing: &server_tx,
+                        packets: &mut packets,
+                        packets_sent: &server_packets_sent_clone,
+                    },
                 )?;
 
                 timing.dtls_protocol_version = rtc.direct_api().dtls_protocol_version();
@@ -283,8 +285,10 @@ fn run_direct_handshake(
                     &mut rtc,
                     true,
                     server_addr,
-                    remote_ice_ufrag,
-                    remote_ice_pwd,
+                    IceCreds {
+                        ufrag: remote_ice_ufrag,
+                        pass: remote_ice_pwd,
+                    },
                     remote_fingerprint,
                     snap.map(|(_, d)| d),
                     remote_sctp_init,
@@ -294,13 +298,15 @@ fn run_direct_handshake(
                 // Run the event loop with message exchange
                 run_rtc_loop_with_exchange(
                     &mut rtc,
-                    &span,
-                    &client_rx,
-                    &client_tx,
                     &mut timing,
                     true,
-                    &mut packets,
-                    &client_packets_sent_clone,
+                    RtcLoopIo {
+                        span: &span,
+                        incoming: &client_rx,
+                        outgoing: &client_tx,
+                        packets: &mut packets,
+                        packets_sent: &client_packets_sent_clone,
+                    },
                 )?;
 
                 timing.dtls_protocol_version = rtc.direct_api().dtls_protocol_version();
@@ -449,8 +455,7 @@ fn configure_rtc(
     rtc: &mut Rtc,
     is_client: bool,
     remote_addr: SocketAddr,
-    remote_ice_ufrag: String,
-    remote_ice_pwd: String,
+    remote_ice_credentials: IceCreds,
     remote_fingerprint: String,
     local_init_data: Option<str0m::channel::SctpInitData>,
     remote_sctp_init: Option<Vec<u8>>,
@@ -473,10 +478,7 @@ fn configure_rtc(
         direct_api.set_ice_lite(!is_client);
         direct_api.set_ice_controlling(is_client);
 
-        direct_api.set_remote_ice_credentials(IceCreds {
-            ufrag: remote_ice_ufrag,
-            pass: remote_ice_pwd,
-        });
+        direct_api.set_remote_ice_credentials(remote_ice_credentials);
 
         let fingerprint: Fingerprint = remote_fingerprint
             .parse()
@@ -627,16 +629,20 @@ enum DataExchangeState {
     Complete,
 }
 
+struct RtcLoopIo<'a> {
+    span: &'a Span,
+    incoming: &'a Receiver<Message>,
+    outgoing: &'a Sender<Message>,
+    packets: &'a mut Vec<PcapPacket>,
+    packets_sent: &'a AtomicUsize,
+}
+
 /// Run the Rtc event loop with message exchange capability
 fn run_rtc_loop_with_exchange(
     rtc: &mut Rtc,
-    span: &Span,
-    incoming: &Receiver<Message>,
-    outgoing: &Sender<Message>,
     timing: &mut TimingReport,
     is_client: bool,
-    packets: &mut Vec<PcapPacket>,
-    packets_sent: &AtomicUsize,
+    io: RtcLoopIo<'_>,
 ) -> Result<(), RtcError> {
     let mut state = DataExchangeState::WaitingForChannelOpen;
     let mut channel_id: Option<ChannelId> = None;
@@ -653,20 +659,20 @@ fn run_rtc_loop_with_exchange(
         }
 
         let timeout = loop {
-            match span.in_scope(|| rtc.poll_output())? {
+            match io.span.in_scope(|| rtc.poll_output())? {
                 Output::Timeout(t) => break t,
                 Output::Transmit(t) => {
                     let data = t.contents.to_vec();
-                    packets_sent.fetch_add(1, Ordering::SeqCst);
+                    io.packets_sent.fetch_add(1, Ordering::SeqCst);
                     if SAVE_PCAP {
-                        packets.push(PcapPacket {
+                        io.packets.push(PcapPacket {
                             src: t.source,
                             dst: t.destination,
                             data: data.clone(),
                         });
                     }
                     // Send packet to other peer
-                    let _ = outgoing.send(Message::Packet {
+                    let _ = io.outgoing.send(Message::Packet {
                         proto: t.proto,
                         source: t.source,
                         destination: t.destination,
@@ -681,7 +687,7 @@ fn run_rtc_loop_with_exchange(
                         is_client,
                         &mut state,
                         &mut channel_id,
-                        outgoing,
+                        io.outgoing,
                     );
                     if state == DataExchangeState::Complete {
                         return Ok(());
@@ -694,7 +700,7 @@ fn run_rtc_loop_with_exchange(
         let wait = timeout.saturating_duration_since(now);
         println!("[{}] poll_output returned timeout in {:?}", role, wait);
 
-        match incoming.recv_timeout(wait) {
+        match io.incoming.recv_timeout(wait) {
             Ok(Message::Packet {
                 proto,
                 source,
@@ -703,7 +709,7 @@ fn run_rtc_loop_with_exchange(
             }) => {
                 println!("[{}] Received packet ({} bytes)", role, contents.len());
                 if SAVE_PCAP {
-                    packets.push(PcapPacket {
+                    io.packets.push(PcapPacket {
                         src: source,
                         dst: destination,
                         data: contents.clone(),
@@ -715,7 +721,8 @@ fn run_rtc_loop_with_exchange(
                     destination,
                     contents: contents.as_slice().try_into()?,
                 };
-                span.in_scope(|| rtc.handle_input(Input::Receive(Instant::now(), receive)))?;
+                io.span
+                    .in_scope(|| rtc.handle_input(Input::Receive(Instant::now(), receive)))?;
             }
             Ok(Message::Exit) => {
                 println!("[{}] Received Exit signal", role);
@@ -726,7 +733,8 @@ fn run_rtc_loop_with_exchange(
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 println!("[{}] Timeout fired, calling handle_input(Timeout)", role);
-                span.in_scope(|| rtc.handle_input(Input::Timeout(Instant::now())))?;
+                io.span
+                    .in_scope(|| rtc.handle_input(Input::Timeout(Instant::now())))?;
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 println!("[{}] Channel disconnected", role);
@@ -749,10 +757,8 @@ fn handle_event(
 ) {
     match event {
         Event::IceConnectionStateChange(ice_state) => match ice_state {
-            IceConnectionState::Checking => {
-                if timing.ice_checking.is_none() {
-                    timing.ice_checking = Some(Instant::now());
-                }
+            IceConnectionState::Checking if timing.ice_checking.is_none() => {
+                timing.ice_checking = Some(Instant::now());
             }
             IceConnectionState::Completed => {
                 timing.ice_completed = Some(Instant::now());
@@ -858,13 +864,11 @@ fn write_pcap(path: &std::path::Path, packets: &[PcapPacket]) -> std::io::Result
         ip_header[8] = 64; // TTL
         ip_header[9] = 17; // protocol = UDP
         // checksum left as 0 (Wireshark will flag but still parse)
-        match pkt.src {
-            SocketAddr::V4(a) => ip_header[12..16].copy_from_slice(&a.ip().octets()),
-            _ => {}
+        if let SocketAddr::V4(a) = pkt.src {
+            ip_header[12..16].copy_from_slice(&a.ip().octets());
         }
-        match pkt.dst {
-            SocketAddr::V4(a) => ip_header[16..20].copy_from_slice(&a.ip().octets()),
-            _ => {}
+        if let SocketAddr::V4(a) = pkt.dst {
+            ip_header[16..20].copy_from_slice(&a.ip().octets());
         }
 
         // UDP header (8 bytes)

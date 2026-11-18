@@ -2,6 +2,7 @@ use crate::chunk::chunk_payload_data::ChunkPayloadData;
 use crate::chunk::chunk_selective_ack::GapAckBlock;
 use crate::util::*;
 
+use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::vec::Vec;
 use std::collections::HashMap;
@@ -10,7 +11,7 @@ use std::collections::HashMap;
 pub(crate) struct PayloadQueue {
     // length: usize,
     chunk_map: HashMap<u32, ChunkPayloadData>,
-    pub(crate) sorted: Vec<u32>,
+    pub(crate) sorted: VecDeque<u32>,
     dup_tsn: Vec<u32>,
     n_bytes: usize,
 }
@@ -21,7 +22,7 @@ impl PayloadQueue {
     }
 
     pub(crate) fn update_sorted_keys(&mut self) {
-        self.sorted.sort_by(|a, b| {
+        self.sorted.make_contiguous().sort_by(|a, b| {
             if sna32lt(*a, *b) {
                 core::cmp::Ordering::Less
             } else {
@@ -36,7 +37,7 @@ impl PayloadQueue {
 
     pub(crate) fn push_no_check(&mut self, p: ChunkPayloadData) {
         self.n_bytes += p.user_data.len();
-        self.sorted.push(p.tsn);
+        self.sorted.push_back(p.tsn);
         self.chunk_map.insert(p.tsn, p);
         //self.length += 1;
         self.update_sorted_keys();
@@ -54,7 +55,7 @@ impl PayloadQueue {
         }
 
         self.n_bytes += p.user_data.len();
-        self.sorted.push(p.tsn);
+        self.sorted.push_back(p.tsn);
         self.chunk_map.insert(p.tsn, p);
         //self.length += 1;
         self.update_sorted_keys();
@@ -65,7 +66,7 @@ impl PayloadQueue {
     /// pop pops only if the oldest chunk's TSN matches the given TSN.
     pub(crate) fn pop(&mut self, tsn: u32) -> Option<ChunkPayloadData> {
         if !self.sorted.is_empty() && tsn == self.sorted[0] {
-            self.sorted.remove(0);
+            self.sorted.pop_front();
             if let Some(c) = self.chunk_map.remove(&tsn) {
                 //self.length -= 1;
                 self.n_bytes = self.n_bytes.saturating_sub(c.user_data.len());
@@ -101,8 +102,32 @@ impl PayloadQueue {
     pub(crate) fn get(&self, tsn: u32) -> Option<&ChunkPayloadData> {
         self.chunk_map.get(&tsn)
     }
+
     pub(crate) fn get_mut(&mut self, tsn: u32) -> Option<&mut ChunkPayloadData> {
         self.chunk_map.get_mut(&tsn)
+    }
+
+    /// Abandon siblings by identity, including nonconsecutive TSNs.
+    pub(crate) fn abandon_message(&mut self, message_id: u64) -> usize {
+        let mut released = 0;
+        for chunk in self.chunk_map.values_mut() {
+            if chunk.message_id == message_id {
+                released += chunk.user_data.len();
+                chunk.user_data.clear();
+                chunk.abandoned = true;
+                chunk.retransmit = false;
+            }
+        }
+        self.n_bytes -= released;
+        released
+    }
+
+    pub(crate) fn mark_all_to_retransmit(&mut self) {
+        for chunk in self.chunk_map.values_mut() {
+            if !chunk.acked && !chunk.abandoned {
+                chunk.retransmit = true;
+            }
+        }
     }
 
     /// popDuplicates returns an array of TSN values that were found duplicate.
@@ -110,34 +135,26 @@ impl PayloadQueue {
         core::mem::take(&mut self.dup_tsn)
     }
 
+    /// Gap offsets are nonzero u16 distances, not wrapping sequence numbers.
+    /// Farther TSNs remain queued for reporting once the cumulative TSN advances.
     pub(crate) fn get_gap_ack_blocks(&self, cumulative_tsn: u32) -> Vec<GapAckBlock> {
-        if self.chunk_map.is_empty() {
-            return vec![];
-        }
-
-        let mut b = GapAckBlock::default();
-        let mut gap_ack_blocks = vec![];
-        for (i, tsn) in self.sorted.iter().enumerate() {
-            let diff = if *tsn >= cumulative_tsn {
-                (*tsn - cumulative_tsn) as u16
-            } else {
-                0
+        let mut gap_ack_blocks: Vec<GapAckBlock> = vec![];
+        for tsn in &self.sorted {
+            let Ok(offset) = u16::try_from(tsn.wrapping_sub(cumulative_tsn)) else {
+                continue;
             };
+            if offset == 0 {
+                continue;
+            }
 
-            if i == 0 {
-                b.start = diff;
-                b.end = b.start;
-            } else if b.end + 1 == diff {
-                b.end += 1;
-            } else {
-                gap_ack_blocks.push(b);
-
-                b.start = diff;
-                b.end = diff;
+            match gap_ack_blocks.last_mut() {
+                Some(block) if block.end.checked_add(1) == Some(offset) => block.end = offset,
+                _ => gap_ack_blocks.push(GapAckBlock {
+                    start: offset,
+                    end: offset,
+                }),
             }
         }
-
-        gap_ack_blocks.push(b);
 
         gap_ack_blocks
     }
@@ -164,16 +181,7 @@ impl PayloadQueue {
     }
 
     pub(crate) fn get_last_tsn_received(&self) -> Option<&u32> {
-        self.sorted.last()
-    }
-
-    pub(crate) fn mark_all_to_retrasmit(&mut self) {
-        for c in self.chunk_map.values_mut() {
-            if c.acked || c.abandoned() {
-                continue;
-            }
-            c.retransmit = true;
-        }
+        self.sorted.back()
     }
 
     pub(crate) fn get_num_bytes(&self) -> usize {
@@ -183,6 +191,12 @@ impl PayloadQueue {
     pub(crate) fn len(&self) -> usize {
         //assert_eq!(self.chunk_map.len(), self.length);
         self.chunk_map.len()
+    }
+
+    pub(crate) fn contains_stream(&self, stream_identifier: u16) -> bool {
+        self.chunk_map
+            .values()
+            .any(|chunk| chunk.stream_identifier == stream_identifier)
     }
 
     pub(crate) fn is_empty(&self) -> bool {

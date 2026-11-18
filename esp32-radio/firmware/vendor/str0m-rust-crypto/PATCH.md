@@ -1,13 +1,13 @@
 # RustCrypto provider patch
 
-Source: crates.io `str0m-rust-crypto` **0.6.0**, upstream revision
-`9b159720be773693dd561dec0fb20c6d7e4aa323` from
+Source: crates.io `str0m-rust-crypto` **0.7.0**, upstream revision
+`5f2183ce7c67117cd1960dfeb11bed11fc188b66` from
 [algesten/str0m](https://github.com/algesten/str0m). The source is used under its
 MIT option; the upstream copyright and license are in `LICENSE-MIT.txt`.
 `Cargo.toml.orig` preserves the published, unnormalized manifest.
 
 The firmware workspace selects this copy through `[patch.crates-io]`.
-It makes three changes:
+It makes the following changes:
 
 1. Move `dimpl/rcgen` behind the default-enabled `generate-cert` feature.
    With that feature disabled, `generate_certificate()` returns `None` and
@@ -16,6 +16,8 @@ It makes three changes:
 3. Expose `dtls_with_crypto_provider` so the application can supply a composed
    dimpl provider while reusing the upstream DTLS forwarding adapter. The helper
    keeps validation and OS randomness enabled.
+4. Remove the unused direct P-256 dependency so it cannot enable precomputed
+   tables on the ESP32 through Cargo feature unification.
 
 The firmware disables default features and generates ECDSA P-256 certificates
 on the ESP32 using mbedTLS. The upstream certificate generator enables AWS-LC,

@@ -1,31 +1,31 @@
 --- a/src/association/mod.rs
 +++ b/src/association/mod.rs
-@@ -66,6 +66,8 @@
+@@ -66,6 +66,8 @@ mod timer;
  
  #[cfg(test)]
  mod association_test;
 +#[cfg(test)]
 +mod receive_limits_test;
  
- /// Reasons why an association might be lost
- #[non_exhaustive]
-@@ -200,6 +202,7 @@
+ #[cfg(test)]
+ mod timed_reliability_test;
+@@ -212,6 +214,7 @@ pub struct Association {
      handshake_completed: bool,
      max_send_message_size: u32,
      max_receive_message_size: u32,
 +    receive_limits: Option<crate::ReceiveLimits>,
      inflight_queue_length: usize,
      will_send_shutdown: bool,
-     bytes_received: usize,
-@@ -323,6 +326,7 @@
+     next_stream_generation: u64,
+@@ -335,6 +338,7 @@ impl Default for Association {
              handshake_completed: false,
              max_send_message_size: 0,
              max_receive_message_size: 0,
 +            receive_limits: None,
              inflight_queue_length: 0,
              will_send_shutdown: false,
-             bytes_received: 0,
-@@ -443,6 +447,7 @@
+             next_stream_generation: 0,
+@@ -455,6 +459,7 @@ impl Association {
              max_receive_buffer_size: config.max_receive_buffer_size(),
              max_send_message_size: config.max_send_message_size(),
              max_receive_message_size: config.max_receive_message_size(),
@@ -33,7 +33,7 @@
              my_max_num_outbound_streams: config.max_num_outbound_streams(),
              my_max_num_inbound_streams: config.max_num_inbound_streams(),
              max_payload_size,
-@@ -2363,6 +2368,20 @@
+@@ -2433,6 +2438,20 @@ impl Association {
          self.stats.inc_datas();
  
          let can_push = self.payload_queue.can_push(d, self.peer_last_tsn);
@@ -54,7 +54,7 @@
          let mut stream_handle_data = false;
          let mut defer_stream_data = false;
          if can_push && self.data_is_above_pending_reset(d) {
-@@ -3371,6 +3390,12 @@
+@@ -3455,6 +3474,12 @@ impl Association {
          accept: bool,
          default_payload_type: PayloadProtocolIdentifier,
      ) -> Option<Stream<'_>> {
@@ -64,10 +64,10 @@
 +        {
 +            return None;
 +        }
-         let s = StreamState::new(
-             self.side,
-             stream_identifier,
-@@ -3410,7 +3435,51 @@
+         let generation = self.next_stream_generation;
+         self.next_stream_generation = generation.checked_add(1)?;
+         let mut s = StreamState::new(
+@@ -3499,7 +3524,51 @@ impl Association {
          }
      }
  
@@ -121,7 +121,7 @@
              bytes_queued += s.get_num_bytes_in_reassembly_queue() as u32;
 --- /dev/null
 +++ b/src/association/receive_limits_test.rs
-@@ -0,0 +1,231 @@
+@@ -0,0 +1,233 @@
 +use super::*;
 +use crate::ReceiveLimits;
 +use crate::packet::PartialDecode;
@@ -283,15 +283,17 @@
 +#[test]
 +fn tiny_incomplete_messages_cannot_exhaust_chunk_metadata() {
 +    let mut a = association(8192, 32768, 64, 8);
++    // Leave TSN 1 outstanding so ordinary undrainable-buffer detection does
++    // not close the association before the hard fragment cap is exercised.
 +    for n in 0..64 {
-+        let mut chunk = data(n + 1, 0, n as u16, 1);
++        let mut chunk = data(n + 2, 0, n as u16, 1);
 +        chunk.ending_fragment = false;
 +        a.handle_data(&chunk).unwrap();
 +    }
 +    assert_eq!(a.retained_receive_data(), (64, 64));
 +    assert_eq!(a.get_my_receiver_window_credit(), 0);
 +    assert_eq!(
-+        a.handle_data(&data(65, 0, 64, 1)).unwrap_err(),
++        a.handle_data(&data(1, 0, 64, 1)).unwrap_err(),
 +        Error::ErrReceiveLimitExceeded
 +    );
 +    assert_eq!(a.retained_receive_data(), (64, 64));
@@ -355,7 +357,7 @@
 +}
 --- a/src/config.rs
 +++ b/src/config.rs
-@@ -22,11 +22,72 @@
+@@ -22,11 +22,72 @@ pub(crate) const RTO_MAX: u64 = 60000;
  // Default max retransmit value (RFC 4960 Section 15)
  const DEFAULT_MAX_INIT_RETRANS: usize = 8;
  
@@ -428,7 +430,7 @@
      max_num_outbound_streams: u16,
      max_num_inbound_streams: u16,
  
-@@ -65,6 +126,7 @@
+@@ -75,6 +136,7 @@ impl Default for TransportConfig {
      fn default() -> Self {
          TransportConfig {
              max_receive_buffer_size: INITIAL_RECV_BUF_SIZE,
@@ -436,7 +438,7 @@
              max_send_message_size: DEFAULT_MAX_MESSAGE_SIZE,
              max_receive_message_size: DEFAULT_MAX_MESSAGE_SIZE,
              max_num_outbound_streams: u16::MAX,
-@@ -79,6 +141,21 @@
+@@ -91,6 +153,21 @@ impl Default for TransportConfig {
  }
  
  impl TransportConfig {
@@ -455,10 +457,10 @@
 +        self.receive_limits
 +    }
 +
-     pub fn with_max_receive_buffer_size(mut self, value: u32) -> Self {
-         self.max_receive_buffer_size = value;
-         self
-@@ -111,7 +188,10 @@
+     /// Set the receive storage budget across all streams, including reset-deferred DATA.
+     ///
+     /// Reads deliver complete messages only. If this budget is exhausted with no
+@@ -133,7 +210,10 @@ impl TransportConfig {
      }
  
      pub(crate) fn max_receive_buffer_size(&self) -> u32 {
@@ -470,7 +472,7 @@
      }
  
      pub(crate) fn max_send_message_size(&self) -> u32 {
-@@ -119,7 +199,10 @@
+@@ -141,7 +221,10 @@ impl TransportConfig {
      }
  
      pub(crate) fn max_receive_message_size(&self) -> u32 {
@@ -484,7 +486,7 @@
      pub(crate) fn max_num_outbound_streams(&self) -> u16 {
 --- a/src/error.rs
 +++ b/src/error.rs
-@@ -217,6 +217,8 @@
+@@ -221,6 +221,8 @@ pub enum Error {
      ErrOutboundPacketTooLarge,
      #[error("inbound packet larger than maximum message size")]
      ErrInboundPacketTooLarge,
@@ -495,7 +497,7 @@
      #[error("Stream not existed")]
 --- a/src/lib.rs
 +++ b/src/lib.rs
-@@ -75,8 +75,8 @@
+@@ -75,8 +75,8 @@ pub use crate::chunk::chunk_payload_data::{ChunkPayloadData, PayloadProtocolIden
  
  mod config;
  pub use crate::config::{
@@ -508,7 +510,7 @@
  mod endpoint;
 --- a/src/packet.rs
 +++ b/src/packet.rs
-@@ -317,7 +317,21 @@
+@@ -317,7 +317,21 @@ impl Packet {
      }
  
      pub(crate) fn marshal(&self) -> Result<Bytes> {
@@ -533,12 +535,10 @@
      }
 --- a/src/queue/reassembly_queue.rs
 +++ b/src/queue/reassembly_queue.rs
-@@ -223,6 +223,15 @@
-             n_bytes: 0,
-             max_message_size,
+@@ -226,6 +226,15 @@ impl ReassemblyQueue {
          }
-+    }
-+
+     }
+ 
 +    /// Every retained DATA fragment, complete or still awaiting reassembly.
 +    pub(crate) fn chunks(&self) -> impl Iterator<Item = &ChunkPayloadData> {
 +        self.ordered
@@ -546,6 +546,8 @@
 +            .chain(&self.unordered)
 +            .flat_map(|message| &message.chunks)
 +            .chain(&self.unordered_chunks)
-     }
- 
++    }
++
      pub(crate) fn push(&mut self, chunk: ChunkPayloadData) -> Result<bool> {
+         if chunk.stream_identifier != self.si {
+             return Ok(false);

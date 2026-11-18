@@ -15,6 +15,8 @@ pub(crate) struct SpawnConfig {
 }
 
 impl SpawnConfig {
+    pub(crate) const RADIO_STACK_BYTES: usize = 64 * 1024;
+
     pub(crate) fn radio() -> Result<Self> {
         Self::configure(2)
     }
@@ -29,10 +31,10 @@ impl SpawnConfig {
         let (name, stack_size, priority, core) = match role {
             0 => (c"analysis", 20_480, 4, Core::Core1),
             1 => (c"metrics", 8192, 2, Core::Core1),
-            2 => (c"radio", 49_152, 5, Core::Core0),
+            2 => (c"radio", Self::RADIO_STACK_BYTES, 5, Core::Core0),
             _ => return Err(Error::new("invalid task role")),
         };
-        // HAL 0.46 can return a zeroed value if IDF cannot initialize pthread
+        // The HAL can return a zeroed value if IDF cannot initialize pthread
         // storage. HAL rejects priority zero; use SDK defaults in that case.
         let saved = ThreadSpawnConfiguration::get()
             .filter(|config| config.priority != 0)

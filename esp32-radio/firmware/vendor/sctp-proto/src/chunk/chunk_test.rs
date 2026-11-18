@@ -464,8 +464,10 @@ use crate::chunk::chunk_init::*;
 use crate::chunk::chunk_payload_data::*;
 use crate::chunk::chunk_selective_ack::ChunkSelectiveAck;
 use crate::packet::*;
+use crate::param::param_forward_tsn_supported::ParamForwardTsnSupported;
 use crate::param::param_outgoing_reset_request::ParamOutgoingResetRequest;
 use crate::param::param_state_cookie::*;
+use crate::param::param_supported_extensions::ParamSupportedExtensions;
 
 #[test]
 fn test_init_chunk() -> Result<()> {
@@ -587,6 +589,63 @@ fn test_chrome_chunk2_init_ack() -> Result<()> {
     Ok(())
 }
 
+/// An INIT whose parameters end with a Forward TSN supported carrying no value,
+/// the order mediasoup's SCTP stack emits. Compare test_chrome_chunk1_init,
+/// which carries the same parameter in a non-final position.
+static RAW_MEDIASOUP_INIT: Bytes = Bytes::from_static(&[
+    0x13, 0x88, 0x13, 0x88, 0x00, 0x00, 0x00, 0x00, 0x92, 0x57, 0x55, 0xc7, 0x01, 0x00, 0x00, 0x20,
+    0x12, 0x34, 0x56, 0x78, 0x00, 0x02, 0x00, 0x00, 0x04, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x01,
+    0x80, 0x08, 0x00, 0x08, 0x82, 0xc0, 0x40, 0xc2, 0xc0, 0x00, 0x00, 0x04,
+]);
+
+/// The INIT ACK counterpart, where the state cookie precedes the capability
+/// parameters and so Forward TSN supported is again last.
+static RAW_MEDIASOUP_INIT_ACK: Bytes = Bytes::from_static(&[
+    0x13, 0x88, 0x13, 0x88, 0xca, 0xfe, 0xba, 0xbe, 0x43, 0xc1, 0x8f, 0x28, 0x02, 0x00, 0x00, 0x44,
+    0x12, 0x34, 0x56, 0x78, 0x00, 0x02, 0x00, 0x00, 0x04, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x01,
+    0x00, 0x07, 0x00, 0x24, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
+    0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b,
+    0x1c, 0x1d, 0x1e, 0x1f, 0x80, 0x08, 0x00, 0x08, 0x82, 0xc0, 0x40, 0xc2, 0xc0, 0x00, 0x00, 0x04,
+]);
+
+#[test]
+fn test_mediasoup_chunk_init() -> Result<()> {
+    let pkt = Packet::unmarshal(&RAW_MEDIASOUP_INIT)?;
+    let raw_pkt2 = pkt.marshal()?;
+    assert_eq!(RAW_MEDIASOUP_INIT, raw_pkt2);
+
+    Ok(())
+}
+
+#[test]
+fn test_mediasoup_chunk_init_ack() -> Result<()> {
+    let pkt = Packet::unmarshal(&RAW_MEDIASOUP_INIT_ACK)?;
+    let raw_pkt2 = pkt.marshal()?;
+    assert_eq!(RAW_MEDIASOUP_INIT_ACK, raw_pkt2);
+
+    Ok(())
+}
+
+#[test]
+fn test_init_chunk_value_length_matches_wire() -> Result<()> {
+    // The packet decode loop locates the next chunk from value_length(), so a
+    // value_length() disagreeing with the Chunk Length on the wire shifts every
+    // chunk that follows.
+    for raw_pkt in [&RAW_MEDIASOUP_INIT, &RAW_MEDIASOUP_INIT_ACK] {
+        let raw_chunk = raw_pkt.slice(PACKET_HEADER_SIZE..);
+        let header = ChunkHeader::unmarshal(&raw_chunk)?;
+        let c = ChunkInit::unmarshal(&raw_chunk)?;
+
+        assert_eq!(
+            c.value_length(),
+            header.value_length(),
+            "value_length() should match the Chunk Length on the wire"
+        );
+    }
+
+    Ok(())
+}
+
 #[test]
 fn test_init_marshal_unmarshal() -> Result<()> {
     let mut p = Packet {
@@ -646,6 +705,67 @@ fn test_init_marshal_unmarshal() -> Result<()> {
     } else {
         panic!("Failed to cast Chunk -> InitAck");
     }
+
+    Ok(())
+}
+
+#[test]
+fn test_init_trailing_param_without_value() -> Result<()> {
+    // The Chunk Length includes the padding of every parameter except the last,
+    // so a last parameter carrying no value leaves exactly PARAM_HEADER_LENGTH
+    // bytes of chunk value.
+    let init = ChunkInit {
+        is_ack: false,
+        initiate_tag: 0x1234_5678,
+        advertised_receiver_window_credit: 131072,
+        num_outbound_streams: 1024,
+        num_inbound_streams: 1024,
+        initial_tsn: 1,
+        params: vec![
+            Box::new(ParamSupportedExtensions {
+                chunk_types: vec![CT_RECONFIG, CT_FORWARD_TSN],
+            }),
+            Box::new(ParamForwardTsnSupported {}),
+        ],
+    };
+
+    let p = Packet {
+        common_header: CommonHeader {
+            source_port: 5000,
+            destination_port: 5000,
+            verification_tag: 0,
+        },
+        chunks: vec![Box::new(init)],
+    };
+
+    let raw_pkt = p.marshal()?;
+    let pkt = Packet::unmarshal(&raw_pkt)?;
+    assert_eq!(pkt.chunks.len(), 1, "expected a single INIT chunk");
+
+    let c = pkt.chunks[0]
+        .as_any()
+        .downcast_ref::<ChunkInit>()
+        .expect("Failed to cast Chunk -> Init");
+
+    assert_eq!(c.initiate_tag, 0x1234_5678);
+    assert_eq!(c.advertised_receiver_window_credit, 131072);
+    assert_eq!(c.num_outbound_streams, 1024);
+    assert_eq!(c.num_inbound_streams, 1024);
+    assert_eq!(c.initial_tsn, 1);
+    assert_eq!(c.params.len(), 2, "expected both parameters");
+
+    let supported_ext = c.params[0]
+        .as_any()
+        .downcast_ref::<ParamSupportedExtensions>()
+        .expect("Failed to cast Param -> SupportedExtensions");
+    assert_eq!(supported_ext.chunk_types, vec![CT_RECONFIG, CT_FORWARD_TSN]);
+
+    c.params[1]
+        .as_any()
+        .downcast_ref::<ParamForwardTsnSupported>()
+        .expect("Failed to cast Param -> ForwardTsnSupported");
+
+    assert_eq!(raw_pkt, pkt.marshal()?, "expected a byte-exact round trip");
 
     Ok(())
 }

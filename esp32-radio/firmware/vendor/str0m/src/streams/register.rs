@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::rtp_::{Nack, ReceptionReport, SeqNo};
 
@@ -81,6 +81,13 @@ impl ReceiverRegister {
         self.nack.accepts(seq)
     }
 
+    /// Mark `seq` as present without counting it as received: it was rebuilt from redundancy
+    /// (RFC 2198 RED) rather than arriving on the wire. It will no longer be NACKed or accepted
+    /// as new, while `count` (and thus the reception report loss) still reflects wire loss.
+    pub fn mark_recovered(&mut self, seq: SeqNo) {
+        self.nack.update(seq);
+    }
+
     pub fn update(&mut self, seq: SeqNo, arrival: Instant, rtp_time: u32, clock_rate: u32) -> bool {
         if self.first.is_none() {
             self.first = Some(seq);
@@ -97,9 +104,26 @@ impl ReceiverRegister {
         new
     }
 
+    pub fn recovery_deadline(
+        &self,
+        range: std::ops::Range<SeqNo>,
+        received: Instant,
+        rtt: Option<Duration>,
+    ) -> Option<Instant> {
+        self.nack.recovery_deadline(range, received, rtt)
+    }
+
+    pub fn has_pending_nacks(&self) -> bool {
+        self.nack.has_pending_nacks()
+    }
+
     /// Generates a NACK report
-    pub fn nack_report(&mut self) -> Option<impl Iterator<Item = Nack>> {
-        self.nack.nack_reports()
+    pub fn nack_report(
+        &mut self,
+        now: Instant,
+        rtt: Option<Duration>,
+    ) -> Option<impl Iterator<Item = Nack>> {
+        self.nack.nack_reports(now, rtt)
     }
 
     /// Create a new reception report.
@@ -223,10 +247,10 @@ impl ReceiverRegister {
 
         let lost_interval = expected_interval - received_interval;
 
-        let lost = if expected_interval == 0 || lost_interval == 0 {
+        let lost = if expected_interval == 0 || lost_interval <= 0 {
             0
         } else {
-            (lost_interval << 8) / expected_interval
+            ((lost_interval << 8) / expected_interval).min(255)
         } as u8;
 
         trace!("Reception fraction lost: {}", lost);
@@ -268,6 +292,21 @@ mod test {
     use std::time::{Duration, Instant};
 
     use crate::streams::register::{ReceiverRegister, expected, packets_lost};
+
+    #[test]
+    fn clearing_register_resets_nack_timing() {
+        let mut reg = ReceiverRegister::new(None);
+        let now = Instant::now();
+        reg.update(10.into(), now, 0, 90_000);
+        reg.update(12.into(), now, 3000, 90_000);
+        assert!(reg.nack_report(now, None).is_some());
+        assert!(reg.nack_report(now, None).is_none());
+        reg.clear(Some(10.into()));
+        assert!(!reg.has_pending_nacks());
+        reg.update(12.into(), now, 3000, 90_000);
+        let nacks: Vec<_> = reg.nack_report(now, None).expect("fresh loss").collect();
+        assert_eq!(nacks[0].reports[0].pid, 11);
+    }
 
     #[test]
     fn jitter_at_0() {
@@ -319,6 +358,21 @@ mod test {
         // after rounding to int.
         assert_eq!(report.jitter, 2);
         assert_eq!(report.jitter, r.jitter_in_rtp_ts());
+    }
+
+    #[test]
+    fn fraction_lost_is_zero_when_an_interval_receives_more_than_expected() {
+        let mut reg = ReceiverRegister::new(None);
+
+        assert_eq!(reg.fraction_lost(120, 118), 4);
+        assert_eq!(reg.fraction_lost(240, 240), 0);
+    }
+
+    #[test]
+    fn fraction_lost_saturates_when_everything_is_lost() {
+        let mut reg = ReceiverRegister::new(None);
+
+        assert_eq!(reg.fraction_lost(100, 0), 255);
     }
 
     #[test]

@@ -159,15 +159,17 @@ fn missing_tsn_can_fill_a_gap_and_restore_receive_credit_within_the_budget() {
 #[test]
 fn tiny_incomplete_messages_cannot_exhaust_chunk_metadata() {
     let mut a = association(8192, 32768, 64, 8);
+    // Leave TSN 1 outstanding so ordinary undrainable-buffer detection does
+    // not close the association before the hard fragment cap is exercised.
     for n in 0..64 {
-        let mut chunk = data(n + 1, 0, n as u16, 1);
+        let mut chunk = data(n + 2, 0, n as u16, 1);
         chunk.ending_fragment = false;
         a.handle_data(&chunk).unwrap();
     }
     assert_eq!(a.retained_receive_data(), (64, 64));
     assert_eq!(a.get_my_receiver_window_credit(), 0);
     assert_eq!(
-        a.handle_data(&data(65, 0, 64, 1)).unwrap_err(),
+        a.handle_data(&data(1, 0, 64, 1)).unwrap_err(),
         Error::ErrReceiveLimitExceeded
     );
     assert_eq!(a.retained_receive_data(), (64, 64));

@@ -37,10 +37,9 @@ omit their public signature fixtures.
 
 ## str0m task stack
 
-Keep `Rtc` behind a `Box` in the transport. Storing and returning it inline
-created large nested stack frames that overflowed a 48 KiB radio task during
-initialization. Measure the low-water mark on the S3 after transport upgrades;
-host compilation cannot establish the device stack requirement.
+Keep `Rtc` behind a `Box` in the transport. The radio task uses a 64 KiB
+internal stack for nested peer construction, DTLS validation and packet
+handling. Check its low-water mark in live telemetry after transport upgrades.
 
 The radio task runs on core 0. Full-catalog validation must yield between
 cache fills so that core's idle task can service its watchdog.
@@ -48,6 +47,14 @@ cache fills so that core's idle task can service its watchdog.
 Keep the configured 1 KiB malloc threshold so larger allocations prefer PSRAM.
 The SDK's 16 KiB setting filled internal RAM with transport allocations. Task
 stacks, Wi-Fi and the FFT scratch buffer retain their internal memory.
+
+## ICE candidate parsing
+
+The SFU can send `ufrag` before `generation` on an ICE candidate. str0m 0.25.0's
+SDP parser expects these extensions in a fixed order and can silently discard
+the candidate. The board then receives HTTP 200 at startup and times out waiting
+for WebRTC. The [vendor patch](firmware/vendor/str0m/ice-candidate-order.patch)
+uses the standalone ICE candidate parser, which accepts either order.
 
 ## Negotiated data channels
 

@@ -97,7 +97,7 @@ impl Peer {
                 .set_crypto_provider(crypto)
                 .set_dtls_cert(certificate.0)
                 .clear_codecs()
-                .enable_opus(true)
+                .enable_opus(true, false)
                 .set_rtp_mode(true)
                 // Leave room for SFU events before the smaller command filter.
                 // Stream-state count is independent of negotiated stream IDs.

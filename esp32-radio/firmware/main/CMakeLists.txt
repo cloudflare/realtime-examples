@@ -1,4 +1,4 @@
-# HAL 0.46 compiles wrappers for these S3 drivers even when only its task API is used.
+# The HAL compiles wrappers for these S3 drivers even when only its task API is used.
 set(RUST_DRIVER_DEPS driver sdmmc esp_driver_gptimer esp_driver_i2c esp_driver_i2s
     esp_driver_ledc esp_driver_pcnt esp_driver_rmt esp_driver_sdmmc
     esp_driver_sdspi esp_driver_spi esp_driver_twai esp_driver_uart

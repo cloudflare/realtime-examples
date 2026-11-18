@@ -76,7 +76,7 @@ impl Playback {
             index: self.index,
             pts_ms: self.elapsed.wrapping_mul(FRAME_MS as u64) as u32,
             paused: self.paused,
-            spectrum: self.elapsed % 2 == 0,
+            spectrum: self.elapsed.is_multiple_of(2),
         };
         self.elapsed = self.elapsed.wrapping_add(1);
         if !self.paused {

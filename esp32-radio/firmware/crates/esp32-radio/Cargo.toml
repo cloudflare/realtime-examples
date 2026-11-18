@@ -21,10 +21,10 @@ serde.workspace = true
 serde_json.workspace = true
 
 [target.'cfg(target_os = "espidf")'.dependencies]
-esp-idf-hal = { version = "=0.46.2", default-features = false, features = ["std"] }
+esp-idf-hal = { version = "=0.47.0", default-features = false, features = ["std"] }
 
 [build-dependencies]
-embuild = "=0.33.5"
+embuild = "=0.33.7"
 
 [features]
 crypto-self-test = []

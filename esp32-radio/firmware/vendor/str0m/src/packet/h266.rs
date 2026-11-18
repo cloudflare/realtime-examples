@@ -8,8 +8,8 @@
 //!
 //! The two-byte NAL unit header is `F(1) | Z(1) | LayerId(6) || Type(5) |
 //! TID(3)` (§1.1.4) — the NAL type lives in the SECOND byte, upper 5 bits.
-//! Parameter sets: VPS=14, SPS=15, PPS=16. Skipped on send: AUD=20,
-//! Filler(FD)=25. IRAP (keyframe) NAL types: IDR_W_RADL=7, IDR_N_LP=8, CRA=9.
+//! Parameter sets: VPS=14, SPS=15, PPS=16. Skipped on send: AUD=20.
+//! IRAP (keyframe) NAL types: IDR_W_RADL=7, IDR_N_LP=8, CRA=9.
 //!
 //! Profile/tier/level fmtp negotiation (RFC 9328 §7.2) is implemented in
 //! `h266_profile.rs` and the format layer. DONL (`sprop-max-don-diff`,
@@ -36,7 +36,8 @@ const H266NALU_VPS_NALU_TYPE: u8 = 14;
 const H266NALU_SPS_NALU_TYPE: u8 = 15;
 const H266NALU_PPS_NALU_TYPE: u8 = 16;
 const H266NALU_AUD_NALU_TYPE: u8 = 20;
-const H266NALU_FILLER_NALU_TYPE: u8 = 25; // FD_NUT
+#[allow(dead_code)] // FD_NUT; referenced by tests.
+const H266NALU_FILLER_NALU_TYPE: u8 = 25;
 
 // RFC 9328 RTP packet types.
 const H266NALU_AGGREGATION_PACKET_TYPE: u8 = 28;
@@ -334,8 +335,8 @@ impl H266Packetizer {
         let original_hdr = H266NALUHeader::new(nalu[0], nalu[1]);
         let original_type = original_hdr.nalu_type();
 
-        // Ignore AUD/filler.
-        if original_type == H266NALU_AUD_NALU_TYPE || original_type == H266NALU_FILLER_NALU_TYPE {
+        // Ignore AUD.
+        if original_type == H266NALU_AUD_NALU_TYPE {
             return;
         }
 
@@ -1001,7 +1002,7 @@ mod test {
                 typ: u8,
             }
 
-            let tests = vec![
+            let tests = [
                 // S=1, type 7 (IDR_W_RADL)
                 TestType {
                     value: 0x87,
@@ -1086,14 +1087,14 @@ mod test {
         fn test_h266_single_nalunit_packet() -> Result<()> {
             // Valid single NAL (TRAIL, type 0) -> Annex-B out.
             let nal = make_nal(0, 5);
-            let (out, keyframe) = depacketize_all(&[nal.clone()])?;
+            let (out, keyframe) = depacketize_all(std::slice::from_ref(&nal))?;
             assert_eq!(&out[..4], &[0, 0, 0, 1]);
             assert_eq!(&out[4..], &nal[..]);
             assert!(!keyframe);
 
             // IDR single NAL flags keyframe.
             let idr = make_nal(H266NALU_IDR_W_RADL, 5);
-            let (out, keyframe) = depacketize_all(&[idr.clone()])?;
+            let (out, keyframe) = depacketize_all(std::slice::from_ref(&idr))?;
             assert_eq!(&out[4..], &idr[..]);
             assert!(keyframe);
 
@@ -1214,7 +1215,7 @@ mod test {
                 expect_err: bool, // all error cases expect ErrShortPacket
             }
 
-            let tests = vec![
+            let tests = [
                 // empty
                 TestType {
                     raw: &[],
@@ -1395,9 +1396,9 @@ mod test {
             Ok(())
         }
 
-        /// AUD and filler NALs are dropped by the packetizer.
+        /// AUD NALs are dropped by the packetizer, filler NALs are kept.
         #[test]
-        fn test_h266_packetizer_drops_aud_and_filler() -> Result<()> {
+        fn test_h266_packetizer_drops_aud_keeps_filler() -> Result<()> {
             let aud = make_nal(H266NALU_AUD_NALU_TYPE, 4);
             let fd = make_nal(H266NALU_FILLER_NALU_TYPE, 10);
             let trail = make_nal(0, 8);
@@ -1405,8 +1406,9 @@ mod test {
 
             let mut pck = H266Packetizer::default();
             let packets = pck.packetize(1200, &payload)?;
-            assert_eq!(packets.len(), 1);
+            assert_eq!(packets.len(), 2);
             assert_eq!(packets[0], trail);
+            assert_eq!(packets[1], fd);
             Ok(())
         }
 
@@ -2266,7 +2268,7 @@ mod test {
         fn test_h266_fu_preserves_layer_and_tid() -> Result<()> {
             // TRAIL (type 1) on layer 5, temporal sublayer tid=3.
             let mut nal = hdr(1, 5, 3).to_vec();
-            nal.extend(std::iter::repeat(0xAB).take(998));
+            nal.extend(std::iter::repeat_n(0xAB, 998));
 
             let mut pck = H266Packetizer::default();
             let packets = pck.packetize(100, &nal)?;
@@ -2294,7 +2296,7 @@ mod test {
         fn test_h266_fu_preserves_z_bit() -> Result<()> {
             let mut nal = hdr(1, 2, 1).to_vec();
             nal[0] |= 0b0100_0000; // set Z
-            nal.extend(std::iter::repeat(0xCD).take(500));
+            nal.extend(std::iter::repeat_n(0xCD, 500));
 
             let mut pck = H266Packetizer::default();
             let packets = pck.packetize(100, &nal)?;
@@ -2561,7 +2563,7 @@ mod test {
         fn test_h266_fu_preserves_all_header_flags() -> Result<()> {
             let mut nal = hdr(1, 1, 1).to_vec();
             nal[0] |= 0b1100_0000; // F + Z
-            nal.extend(std::iter::repeat(0x5A).take(400));
+            nal.extend(std::iter::repeat_n(0x5A, 400));
 
             let mut pck = H266Packetizer::default();
             let packets = pck.packetize(100, &nal)?;

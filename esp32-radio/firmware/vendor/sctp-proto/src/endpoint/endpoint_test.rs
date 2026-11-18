@@ -25,7 +25,9 @@ use crate::chunk::chunk_shutdown_complete::ChunkShutdownComplete;
 use crate::chunk::{ErrorCauseProtocolViolation, PROTOCOL_VIOLATION};
 use crate::packet::{CommonHeader, Packet};
 use crate::param::param_outgoing_reset_request::ParamOutgoingResetRequest;
-use crate::param::param_reconfig_response::ParamReconfigResponse;
+use crate::param::param_reconfig_response::{ParamReconfigResponse, ReconfigResult};
+use crate::param::param_supported_address_types::ParamSupportedAddressTypes;
+use crate::param::param_type::ParamType;
 use assert_matches::assert_matches;
 use core::net::Ipv6Addr;
 use core::ops::RangeFrom;
@@ -866,6 +868,14 @@ fn test_assoc_reliable_retransmission() -> Result<()> {
         assert!(!q.is_readable(), "should no longer be readable");
     }
 
+    let sent = pair.client_stream(client_ch, si)?.stats()?;
+    let received = pair.server_stream(server_ch, si)?.stats()?;
+    assert_eq!((sent.messages_sent, sent.bytes_sent), (2, 7));
+    assert_eq!(
+        (received.messages_received, received.bytes_received),
+        (2, 7)
+    );
+
     close_association_pair(&mut pair, client_ch, server_ch, si);
 
     Ok(())
@@ -1241,160 +1251,85 @@ fn test_assoc_unreliable_rexmit_unordered_fragment() -> Result<()> {
 }
 
 #[test]
-fn test_assoc_unreliable_rexmit_timed_ordered() -> Result<()> {
-    //let _guard = subscribe();
-
-    let si: u16 = 3;
-    let mut sbuf = vec![0u8; 1000];
-    for (i, b) in sbuf.iter_mut().enumerate() {
-        *b = (i & 0xff) as u8;
+fn test_pending_timed_expiry_window_stall() -> Result<()> {
+    for unordered in [false, true] {
+        for initial_ssn in [1, u16::MAX] {
+            let (mut pair, client, server) = create_association_pair(AckMode::NoDelay, 0)?;
+            establish_session_pair(&mut pair, client, server, 3)?;
+            pair.client_conn_mut(client)
+                .streams
+                .get_mut(&3)
+                .unwrap()
+                .sequence_number = initial_ssn;
+            pair.server_conn_mut(server)
+                .streams
+                .get_mut(&3)
+                .unwrap()
+                .reassembly_queue
+                .next_ssn = initial_ssn;
+            let now = pair.time;
+            // Leave reliable DATA in flight so the stalled window cannot send a probe.
+            pair.client_conn_mut(client)
+                .open_stream(4, PayloadProtocolIdentifier::Binary)?
+                .write(b"blocker")?;
+            pair.client.drive(now, pair.server.addr);
+            let old_cwnd = pair.client_conn_mut(client).cwnd;
+            pair.client_conn_mut(client).cwnd = 7;
+            pair.client_stream(client, 3)?.set_reliability_params(
+                unordered,
+                ReliabilityType::Timed,
+                10,
+            )?;
+            while pair.client_conn_mut(client).poll().is_some() {}
+            let old = vec![42; 3000];
+            pair.client_stream(client, 3)?.write(&old)?;
+            // Start the lifetime while congestion credit still prevents transmission.
+            pair.client.drive(now, pair.server.addr);
+            pair.client
+                .drive(now + Duration::from_millis(9), pair.server.addr);
+            assert_eq!(pair.client_stream(client, 3)?.buffered_amount()?, old.len());
+            // Changing the stream policy cannot extend an accepted message's lifetime.
+            pair.client_stream(client, 3)?.set_reliability_params(
+                unordered,
+                ReliabilityType::Reliable,
+                0,
+            )?;
+            // Exact deadline expiry precedes the first TSN assignment even with a closed window.
+            pair.client
+                .drive(now + Duration::from_millis(10), pair.server.addr);
+            assert_eq!(pair.client_stream(client, 3)?.buffered_amount()?, 0);
+            pair.client
+                .drive(now + Duration::from_millis(11), pair.server.addr);
+            let mut low_events = 0;
+            while let Some(event) = pair.client_conn_mut(client).poll() {
+                if matches!(
+                    event,
+                    Event::Stream(StreamEvent::BufferedAmountLow { id: 3 })
+                ) {
+                    low_events += 1;
+                }
+            }
+            assert_eq!(low_events, 1, "expiry releases buffer credit exactly once");
+            pair.time = now + Duration::from_millis(20);
+            pair.client_conn_mut(client).cwnd = old_cwnd;
+            pair.client_stream(client, 3)?.set_reliability_params(
+                unordered,
+                ReliabilityType::Reliable,
+                0,
+            )?;
+            pair.client_stream(client, 3)?.write(b"fresh")?;
+            pair.drive();
+            let chunks = pair
+                .server_stream(server, 3)?
+                .read()?
+                .expect("fresh message");
+            let mut data = vec![0; chunks.len()];
+            chunks.read(&mut data)?;
+            assert_eq!(data, b"fresh");
+            assert!(pair.server_stream(server, 3)?.read()?.is_none());
+            assert_eq!(pair.client_stream(client, 3)?.buffered_amount()?, 0);
+        }
     }
-
-    let (mut pair, client_ch, server_ch) = create_association_pair(AckMode::NoDelay, 0)?;
-
-    establish_session_pair(&mut pair, client_ch, server_ch, si)?;
-
-    // When we set the reliability value to 0 [times], then it will cause
-    // the chunk to be abandoned immediately after the first transmission.
-    pair.client_stream(client_ch, si)?
-        .set_reliability_params(false, ReliabilityType::Timed, 0)?;
-    pair.server_stream(server_ch, si)?
-        .set_reliability_params(false, ReliabilityType::Timed, 0)?; // doesn't matter
-
-    //br.drop_next_nwrites(0, 1).await; // drop the first packet (second one should be sacked)
-
-    sbuf[0..4].copy_from_slice(&0u32.to_be_bytes());
-    let n = pair.client_stream(client_ch, si)?.write_sctp(
-        &Bytes::from(sbuf.clone()),
-        PayloadProtocolIdentifier::Binary,
-    )?;
-    assert_eq!(sbuf.len(), n, "unexpected length of received data");
-    pair.client.drive(pair.time, pair.server.addr);
-    pair.client.outbound.clear();
-
-    sbuf[0..4].copy_from_slice(&1u32.to_be_bytes());
-    let n = pair.client_stream(client_ch, si)?.write_sctp(
-        &Bytes::from(sbuf.clone()),
-        PayloadProtocolIdentifier::Binary,
-    )?;
-    assert_eq!(sbuf.len(), n, "unexpected length of received data");
-
-    //log::debug!("flush_buffers");
-    pair.drive();
-
-    let mut buf = vec![0u8; 2000];
-
-    //log::debug!("read_sctp");
-    let chunks = pair.server_stream(server_ch, si)?.read_sctp()?.unwrap();
-    let (n, ppi) = (chunks.len(), chunks.ppi);
-    chunks.read(&mut buf)?;
-    assert_eq!(n, sbuf.len(), "unexpected length of received data");
-    assert_eq!(ppi, PayloadProtocolIdentifier::Binary, "unexpected ppi");
-    assert_eq!(
-        u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]),
-        1,
-        "unexpected received data"
-    );
-
-    //log::debug!("process");
-    pair.drive();
-
-    {
-        let q = &pair
-            .client_conn_mut(client_ch)
-            .streams
-            .get(&si)
-            .unwrap()
-            .reassembly_queue;
-        assert!(!q.is_readable(), "should no longer be readable");
-    }
-
-    close_association_pair(&mut pair, client_ch, server_ch, si);
-
-    Ok(())
-}
-
-#[test]
-fn test_assoc_unreliable_rexmit_timed_unordered() -> Result<()> {
-    //let _guard = subscribe();
-
-    let si: u16 = 3;
-    let mut sbuf = vec![0u8; 1000];
-    for (i, b) in sbuf.iter_mut().enumerate() {
-        *b = (i & 0xff) as u8;
-    }
-
-    let (mut pair, client_ch, server_ch) = create_association_pair(AckMode::NoDelay, 0)?;
-
-    establish_session_pair(&mut pair, client_ch, server_ch, si)?;
-
-    // When we set the reliability value to 0 [times], then it will cause
-    // the chunk to be abandoned immediately after the first transmission.
-    pair.client_stream(client_ch, si)?
-        .set_reliability_params(true, ReliabilityType::Timed, 0)?;
-    pair.server_stream(server_ch, si)?
-        .set_reliability_params(true, ReliabilityType::Timed, 0)?; // doesn't matter
-
-    //br.drop_next_nwrites(0, 1).await; // drop the first packet (second one should be sacked)
-
-    sbuf[0..4].copy_from_slice(&0u32.to_be_bytes());
-    let n = pair.client_stream(client_ch, si)?.write_sctp(
-        &Bytes::from(sbuf.clone()),
-        PayloadProtocolIdentifier::Binary,
-    )?;
-    assert_eq!(sbuf.len(), n, "unexpected length of received data");
-    pair.client.drive(pair.time, pair.server.addr);
-    pair.client.outbound.clear();
-
-    sbuf[0..4].copy_from_slice(&1u32.to_be_bytes());
-    let n = pair.client_stream(client_ch, si)?.write_sctp(
-        &Bytes::from(sbuf.clone()),
-        PayloadProtocolIdentifier::Binary,
-    )?;
-    assert_eq!(sbuf.len(), n, "unexpected length of received data");
-
-    //log::debug!("flush_buffers");
-    pair.drive();
-
-    let mut buf = vec![0u8; 2000];
-
-    //log::debug!("read_sctp");
-    let chunks = pair.server_stream(server_ch, si)?.read_sctp()?.unwrap();
-    let (n, ppi) = (chunks.len(), chunks.ppi);
-    chunks.read(&mut buf)?;
-    assert_eq!(n, sbuf.len(), "unexpected length of received data");
-    assert_eq!(ppi, PayloadProtocolIdentifier::Binary, "unexpected ppi");
-    assert_eq!(
-        u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]),
-        1,
-        "unexpected received data"
-    );
-
-    //log::debug!("process");
-    pair.drive();
-
-    {
-        let q = &pair
-            .client_conn_mut(client_ch)
-            .streams
-            .get(&si)
-            .unwrap()
-            .reassembly_queue;
-        assert!(!q.is_readable(), "should no longer be readable");
-        assert_eq!(
-            0,
-            q.unordered.len(),
-            "should be nothing in the unordered queue"
-        );
-        assert_eq!(
-            0,
-            q.unordered_chunks.len(),
-            "should be nothing in the unorderedChunks list"
-        );
-    }
-
-    close_association_pair(&mut pair, client_ch, server_ch, si);
-
     Ok(())
 }
 
@@ -2685,36 +2620,19 @@ fn test_assoc_reset_inprogress_completed_via_tsn_advance_then_retransmit() -> Re
     // Withhold the DATA packets from the server (simulate loss).
     let withheld: Vec<_> = pair.server.inbound.drain(..).collect();
 
-    // Client initiates reset of stream 1.
-    pair.client_stream(client_ch, si)?.stop()?;
-
-    // Drive client to generate EOS data + RECONFIG packets.
-    pair.drive_client();
-
-    // Separate RECONFIG-bearing packets from DATA-only packets.
-    let (reconfig_packets, data_packets): (Vec<_>, Vec<_>) =
-        pair.server.inbound.drain(..).partition(|(_, _, raw)| {
-            let mut offset = 12usize;
-            while offset + 4 <= raw.len() {
-                if raw[offset] == 130 {
-                    return true;
-                }
-                let chunk_len = u16::from_be_bytes([raw[offset + 2], raw[offset + 3]]) as usize;
-                if chunk_len < 4 {
-                    break;
-                }
-                offset += (chunk_len + 3) & !3;
-            }
-            false
-        });
-
-    assert!(!reconfig_packets.is_empty(), "expected a RECONFIG packet");
+    // A reset of stream 1 sent ahead of the acknowledgement of that DATA, as
+    // a peer that does not wait for it would send it.
+    let reconfig_packet = (
+        pair.time,
+        None,
+        pair.client_conn_mut(client_ch)
+            .early_reset_request(vec![si])
+            .marshal()?,
+    );
 
     // Step 1: Deliver only the RECONFIG. Server hasn't seen the withheld
     // DATA so peer_last_tsn < sender_last_tsn → InProgress.
-    for pkt in &reconfig_packets {
-        pair.server.inbound.push_back(pkt.clone());
-    }
+    pair.server.inbound.push_back(reconfig_packet.clone());
     pair.drive_server();
 
     assert!(
@@ -2722,16 +2640,13 @@ fn test_assoc_reset_inprogress_completed_via_tsn_advance_then_retransmit() -> Re
         "stream should survive InProgress reset"
     );
 
-    // Step 2: Now deliver the withheld DATA + the other data packets.
+    // Step 2: Now deliver the withheld DATA.
     // The TSN-advance loop in handle_data will complete the pending
     // reconfig request (removing it from reconfig_requests).
     // Crucially, this does NOT go through handle_reconfig_param, so
     // max_completed_reconfig_rsn is only updated if the TSN-advance
     // path does it.
     for pkt in withheld {
-        pair.server.inbound.push_back(pkt);
-    }
-    for pkt in data_packets {
         pair.server.inbound.push_back(pkt);
     }
     pair.drive();
@@ -2761,9 +2676,7 @@ fn test_assoc_reset_inprogress_completed_via_tsn_advance_then_retransmit() -> Re
     // Step 4: Replay the original RECONFIG (simulating a late retransmission).
     // If the watermark was not updated during the TSN-advance completion,
     // this will bypass the dedup guard and destroy the new stream.
-    for pkt in reconfig_packets {
-        pair.server.inbound.push_back(pkt);
-    }
+    pair.server.inbound.push_back(reconfig_packet);
     pair.drive();
 
     // The new stream 1 must survive.
@@ -2799,38 +2712,19 @@ fn test_assoc_reset_inprogress_reconfig_retransmission() -> Result<()> {
     // Withhold the DATA packets from the server (simulate loss).
     let withheld: Vec<_> = pair.server.inbound.drain(..).collect();
 
-    // Client initiates reset of stream 1.
-    pair.client_stream(client_ch, si)?.stop()?;
+    // A reset of stream 1 sent ahead of the acknowledgement of that DATA, as
+    // a peer that does not wait for it would send it.
+    let reconfig_packet = (
+        pair.time,
+        None,
+        pair.client_conn_mut(client_ch)
+            .early_reset_request(vec![si])
+            .marshal()?,
+    );
 
-    // Drive client to generate EOS data + RECONFIG packets.
-    pair.drive_client();
-
-    // Separate RECONFIG-bearing packets from DATA-only packets.
-    // Chunk type is the first byte after the 12-byte common header.
-    let (reconfig_packets, data_packets): (Vec<_>, Vec<_>) =
-        pair.server.inbound.drain(..).partition(|(_, _, raw)| {
-            // Scan all chunks in the packet for CT_RECONFIG (130).
-            let mut offset = 12usize;
-            while offset + 4 <= raw.len() {
-                if raw[offset] == 130 {
-                    return true;
-                }
-                let chunk_len = u16::from_be_bytes([raw[offset + 2], raw[offset + 3]]) as usize;
-                if chunk_len < 4 {
-                    break;
-                }
-                offset += (chunk_len + 3) & !3; // pad to 4-byte boundary
-            }
-            false
-        });
-
-    assert!(!reconfig_packets.is_empty(), "expected a RECONFIG packet");
-
-    // Deliver only the RECONFIG packets. The server hasn't seen the withheld
+    // Deliver only the RECONFIG. The server hasn't seen the withheld
     // DATA so peer_last_tsn < sender_last_tsn → InProgress.
-    for pkt in &reconfig_packets {
-        pair.server.inbound.push_back(pkt.clone());
-    }
+    pair.server.inbound.push_back(reconfig_packet.clone());
     pair.drive_server();
 
     // Stream should still exist (reset is InProgress, not completed).
@@ -2841,13 +2735,8 @@ fn test_assoc_reset_inprogress_reconfig_retransmission() -> Result<()> {
 
     // Inject the RECONFIG again (simulating retransmission) together with
     // the withheld DATA so the TSN can finally advance.
-    for pkt in reconfig_packets {
-        pair.server.inbound.push_back(pkt);
-    }
+    pair.server.inbound.push_back(reconfig_packet);
     for pkt in withheld {
-        pair.server.inbound.push_back(pkt);
-    }
-    for pkt in data_packets {
         pair.server.inbound.push_back(pkt);
     }
 
@@ -2865,6 +2754,188 @@ fn test_assoc_reset_inprogress_reconfig_retransmission() -> Result<()> {
     assert!(
         pair.server_stream(server_ch, si).is_err(),
         "stream should retire after its boundary DATA is drained"
+    );
+
+    Ok(())
+}
+
+/// The Outgoing SSN Reset Requests and Re-configuration Response results in
+/// the packets queued for delivery to an endpoint.
+fn reconfig_traffic(
+    inbound: &VecDeque<(Instant, Option<EcnCodepoint>, Bytes)>,
+) -> (Vec<ParamOutgoingResetRequest>, Vec<ReconfigResult>) {
+    let mut requests = vec![];
+    let mut results = vec![];
+    for (_, _, raw) in inbound {
+        for chunk in Packet::unmarshal(raw).unwrap().chunks {
+            let Some(reconfig) = chunk.as_any().downcast_ref::<ChunkReconfig>() else {
+                continue;
+            };
+            for param in reconfig.param_a.iter().chain(reconfig.param_b.iter()) {
+                if let Some(request) = param.as_any().downcast_ref::<ParamOutgoingResetRequest>() {
+                    requests.push(request.clone());
+                }
+                if let Some(response) = param.as_any().downcast_ref::<ParamReconfigResponse>() {
+                    results.push(response.result);
+                }
+            }
+        }
+    }
+    (requests, results)
+}
+
+/// Stream ids whose reset the client reports complete.
+fn completed_resets(pair: &mut Pair, client_ch: AssociationHandle) -> Vec<u16> {
+    let mut ids: Vec<u16> = iter::from_fn(|| pair.client_conn_mut(client_ch).poll())
+        .filter_map(|event| match event {
+            Event::Stream(StreamEvent::ResetComplete { id }) => Some(id),
+            _ => None,
+        })
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
+/// The TSNs of the DATA chunks in the packets queued for delivery to an
+/// endpoint.
+fn data_tsns(inbound: &VecDeque<(Instant, Option<EcnCodepoint>, Bytes)>) -> Vec<u32> {
+    inbound
+        .iter()
+        .flat_map(|(_, _, raw)| Packet::unmarshal(raw).unwrap().chunks)
+        .filter_map(|chunk| {
+            chunk
+                .as_any()
+                .downcast_ref::<ChunkPayloadData>()
+                .map(|data| data.tsn)
+        })
+        .collect()
+}
+
+/// A lost DATA chunk holds back only the reset of its own stream. The reset
+/// of the other stream leaves at once and still carries the last assigned
+/// TSN (RFC 6525 section 5.1.2, A3), which is the lost chunk's TSN, so the
+/// peer defers it until the retransmission arrives (section 5.2.2, E2) and
+/// performs it then. The reset of the lossy stream follows the
+/// acknowledgement, and both complete.
+#[test]
+fn test_assoc_reset_after_loss_waits_only_for_the_lossy_stream() -> Result<()> {
+    let lossy_si: u16 = 1;
+    let other_si: u16 = 2;
+
+    let (mut pair, client_ch, server_ch) = create_association_pair(AckMode::NoDelay, 0)?;
+    establish_session_pair(&mut pair, client_ch, server_ch, lossy_si)?;
+    establish_session_pair(&mut pair, client_ch, server_ch, other_si)?;
+
+    // Lose the DATA of one stream; the other stream's DATA is acknowledged.
+    let _ = pair.client_stream(client_ch, lossy_si)?.write_sctp(
+        &Bytes::from_static(b"lost"),
+        PayloadProtocolIdentifier::Binary,
+    )?;
+    pair.drive_client();
+    let lost_tsns = data_tsns(&pair.server.inbound);
+    assert_eq!(
+        lost_tsns.len(),
+        1,
+        "the write must produce exactly one DATA chunk"
+    );
+    let lost_tsn = lost_tsns[0];
+    pair.server.inbound.clear();
+
+    // Close both streams back to back.
+    pair.client_stream(client_ch, lossy_si)?.close()?;
+    pair.client_stream(client_ch, other_si)?.close()?;
+    pair.drive_client();
+    let (requests, _) = reconfig_traffic(&pair.server.inbound);
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| request.stream_identifiers.clone())
+            .collect::<Vec<_>>(),
+        [vec![other_si]],
+        "only the stream without unacknowledged DATA may be reset right away"
+    );
+    assert_eq!(
+        requests[0].sender_last_tsn, lost_tsn,
+        "RFC 6525 section 5.1.2, A3: the last assigned TSN, not the ack point"
+    );
+
+    // T3-rtx retransmits the lost DATA. The server deferred the early reset
+    // behind it and performs it once it arrives; the second reset follows
+    // the acknowledgement.
+    let mut results = vec![];
+    loop {
+        let more = pair.step();
+        results.extend(reconfig_traffic(&pair.client.inbound).1);
+        if !more {
+            break;
+        }
+    }
+    assert_eq!(
+        results.first(),
+        Some(&ReconfigResult::InProgress),
+        "the peer defers the early reset behind the lost DATA: {results:?}"
+    );
+    assert!(
+        results
+            .iter()
+            .filter(|r| **r == ReconfigResult::SuccessPerformed)
+            .count()
+            >= 2,
+        "both resets are performed once the lost DATA has arrived: {results:?}"
+    );
+    assert_eq!(completed_resets(&mut pair, client_ch), [lossy_si, other_si]);
+
+    Ok(())
+}
+
+/// A reset of a stream whose unacknowledged DATA was abandoned (PR-SCTP) is
+/// released by the FORWARD-TSN exchange, which advances the ack point past
+/// the abandoned chunk.
+#[test]
+fn test_assoc_reset_follows_abandoned_data() -> Result<()> {
+    let si: u16 = 1;
+
+    let (mut pair, client_ch, server_ch) = create_association_pair(AckMode::NoDelay, 0)?;
+    establish_session_pair(&mut pair, client_ch, server_ch, si)?;
+    let datas_received = pair.server_conn_mut(server_ch).stats.get_num_datas();
+
+    // Abandoned after its first transmission, which is lost.
+    pair.client_stream(client_ch, si)?
+        .set_reliability_params(false, ReliabilityType::Rexmit, 0)?;
+    let _ = pair.client_stream(client_ch, si)?.write_sctp(
+        &Bytes::from_static(b"abandoned"),
+        PayloadProtocolIdentifier::Binary,
+    )?;
+    pair.drive_client();
+    pair.server.inbound.clear();
+
+    pair.client_stream(client_ch, si)?.close()?;
+    pair.drive_client();
+    assert!(
+        reconfig_traffic(&pair.server.inbound).0.is_empty(),
+        "the reset waits until the ack point covers the abandoned DATA"
+    );
+
+    let mut results = vec![];
+    loop {
+        let more = pair.step();
+        results.extend(reconfig_traffic(&pair.client.inbound).1);
+        if !more {
+            break;
+        }
+    }
+    assert!(
+        !results.is_empty()
+            && results
+                .iter()
+                .all(|r| *r == ReconfigResult::SuccessPerformed),
+        "the reset must be performed at once, never deferred: {results:?}"
+    );
+    assert_eq!(completed_resets(&mut pair, client_ch), [si]);
+    assert_eq!(
+        pair.server_conn_mut(server_ch).stats.get_num_datas(),
+        datas_received,
+        "the abandoned DATA is never delivered; FORWARD-TSN advanced the ack point"
     );
 
     Ok(())
@@ -2983,6 +3054,50 @@ fn test_assoc_reconfig_failure_keeps_stream_quarantined() -> Result<()> {
 }
 
 #[test]
+fn test_configured_sctp_ports_complete_handshake() -> Result<()> {
+    let mut pair = Pair::default();
+    let config = ClientConfig {
+        transport: Arc::new(
+            TransportConfig::default()
+                .with_local_port(41234)
+                .with_remote_port(9899),
+        ),
+        ..Default::default()
+    };
+
+    let (client_ch, server_ch) = pair.connect_with(config);
+    establish_session_pair(&mut pair, client_ch, server_ch, 1)
+}
+
+#[test]
+fn test_connect_rejects_zero_sctp_port() {
+    let remote: SocketAddr = "127.0.0.1:5000".parse().unwrap();
+
+    for (local_port, remote_port) in [(0, 5000), (5000, 0)] {
+        for use_snap in [false, true] {
+            let transport = TransportConfig::default()
+                .with_local_port(local_port)
+                .with_remote_port(remote_port);
+            let mut config = ClientConfig {
+                transport: Arc::new(transport),
+                ..Default::default()
+            };
+            if use_snap {
+                let local_init = generate_snap_token(&config.transport).unwrap();
+                let remote_init = generate_snap_token(&config.transport).unwrap();
+                config = config.with_snap(local_init, remote_init);
+            }
+
+            let mut endpoint = Endpoint::new(Arc::new(EndpointConfig::default()), None);
+            assert_matches!(
+                endpoint.connect(config, remote),
+                Err(ConnectError::InvalidSctpPort)
+            );
+        }
+    }
+}
+
+#[test]
 fn test_snap_connect_established_and_transmit_uses_peer_verification_tag() {
     let now = Instant::now();
 
@@ -3032,6 +3147,55 @@ fn test_snap_connect_established_and_transmit_uses_peer_verification_tag() {
         pkt.common_header.verification_tag, remote_init.initiate_tag,
         "outbound packet should use peer initiate_tag as verification_tag"
     );
+}
+
+#[test]
+fn test_server_accepts_init_with_supported_address_types() {
+    let now = Instant::now();
+    let mut endpoint = Endpoint::new(
+        Arc::new(EndpointConfig::default()),
+        Some(Arc::new(ServerConfig::default())),
+    );
+    let remote: SocketAddr = "127.0.0.1:5000".parse().unwrap();
+    let init = ChunkInit {
+        initiate_tag: 0x1122_3344,
+        advertised_receiver_window_credit: 1500,
+        num_outbound_streams: 1,
+        num_inbound_streams: 1,
+        initial_tsn: 1,
+        params: vec![Box::new(ParamSupportedAddressTypes {
+            address_types: vec![ParamType::Ipv4Addr, ParamType::Ipv6Addr],
+        })],
+        ..Default::default()
+    };
+    let packet = Packet {
+        common_header: CommonHeader {
+            source_port: 5000,
+            destination_port: 5000,
+            verification_tag: 0,
+        },
+        chunks: vec![Box::new(init)],
+    };
+
+    let (_, DatagramEvent::NewAssociation(mut association)) = endpoint
+        .handle(now, remote, None, None, packet.marshal().unwrap())
+        .expect("INIT should create an association")
+    else {
+        panic!("expected a new association");
+    };
+
+    let transmit = association
+        .poll_transmit(now)
+        .expect("server should respond to INIT");
+    let Payload::RawEncode(datagrams) = transmit.payload else {
+        panic!("expected encoded INIT ACK");
+    };
+    let response = Packet::unmarshal(&datagrams[0]).expect("valid INIT ACK packet");
+    let init_ack = response.chunks[0]
+        .as_any()
+        .downcast_ref::<ChunkInit>()
+        .expect("server should send INIT ACK");
+    assert!(init_ack.is_ack);
 }
 
 #[test]
@@ -3864,4 +4028,33 @@ fn test_snap_association_drains_cleanly() {
         !endpoint.association_ids_init.contains_key(&remote_tag),
         "remote_tag should be removed from association_ids_init after drain"
     );
+}
+
+#[test]
+#[ignore = "manual end-to-end transfer measurement"]
+fn measure_queue_transfer() {
+    for (name, transfer) in [
+        (
+            "unfragmented",
+            test_assoc_reliable_simple as fn() -> Result<()>,
+        ),
+        (
+            "fragmented",
+            test_assoc_reliable_ordered_fragmented_then_defragmented,
+        ),
+    ] {
+        let mut samples = Vec::new();
+        for _ in 0..21 {
+            let start = Instant::now();
+            transfer().unwrap();
+            samples.push(start.elapsed().as_nanos());
+        }
+        samples.sort_unstable();
+        std::println!(
+            "{name}: median={} ns min={} max={}",
+            samples[10],
+            samples[0],
+            samples[20]
+        );
+    }
 }

@@ -9,6 +9,7 @@ use common::negotiate;
 use common::progress;
 use common::{extract_sctp_init, remove_sctp_init, replace_sctp_init};
 use str0m::Rtc;
+use str0m::change::SdpAnswer;
 use str0m::change::SdpOffer;
 use str0m::format::Codec;
 use str0m::format::CodecSpec;
@@ -249,6 +250,41 @@ pub fn answer_no_match() {
 }
 
 #[test]
+pub fn rejected_answer_is_accepted_as_text() {
+    init_log();
+    init_crypto_default();
+
+    let mut l = build_params(info_span!("L"), &[vp8(100)]);
+    let mut r = build_params(info_span!("R"), &[h264(96)]);
+
+    let (offer, pending) = l.span.in_scope(|| {
+        let mut change = l.rtc.sdp_api();
+        change.add_media(MediaKind::Video, Direction::SendRecv, None, None, None);
+        change.apply().unwrap()
+    });
+
+    let answer = r
+        .span
+        .in_scope(|| r.rtc.sdp_api().accept_offer(offer).unwrap());
+
+    let answer_sdp = answer.to_sdp_string();
+    assert!(
+        answer_sdp.contains("m=video 0 UDP/TLS/RTP/SAVPF 0\r\n"),
+        "Expected a rejected m-line with a format, got:\n{}",
+        answer_sdp
+    );
+
+    let answer = SdpAnswer::from_sdp_string(&answer_sdp).unwrap();
+    l.span.in_scope(|| {
+        l.rtc.sdp_api().accept_answer(pending, answer).unwrap();
+    });
+
+    let mid = l._mids()[0];
+    assert!(l.media(mid).unwrap().disabled());
+    assert_eq!(l.media(mid).unwrap().direction(), Direction::Inactive);
+}
+
+#[test]
 pub fn stop_media() {
     init_log();
     init_crypto_default();
@@ -296,6 +332,14 @@ pub fn stop_media() {
         "Stopped m-line should not be in BUNDLE group:\n{}",
         offer_sdp
     );
+    assert!(
+        !offer_sdp.contains("a=msid:"),
+        "Stopped m-line should not advertise an MSID:\n{offer_sdp}"
+    );
+    assert!(
+        !offer_sdp.contains(" msid:"),
+        "Stopped m-line should not advertise an SSRC-level MSID:\n{offer_sdp}"
+    );
 
     // Test left side. Stopped, direction Inactive, PTs preserved.
     assert!(l.media(mid).unwrap().stopped());
@@ -316,6 +360,14 @@ pub fn stop_media() {
         answer_sdp.contains("m=video 0 UDP/TLS/RTP/SAVPF 100\r\n"),
         "Expected stopped m-line with port 0 and PT 100 in answer, got:\n{}",
         answer_sdp
+    );
+    assert!(
+        !answer_sdp.contains("a=msid:"),
+        "Stopped m-line should not advertise an MSID in the answer:\n{answer_sdp}"
+    );
+    assert!(
+        !answer_sdp.contains(" msid:"),
+        "Stopped m-line should not advertise an SSRC-level MSID in the answer:\n{answer_sdp}"
     );
 
     // L accepts the answer
@@ -585,7 +637,7 @@ fn max_bundle_offer_accepted() {
         info_span!("R"),
         Rtc::builder()
             .clear_codecs()
-            .enable_opus(true)
+            .enable_opus(true, false)
             .enable_vp8(true)
             .build(Instant::now()),
     );
@@ -776,6 +828,65 @@ fn h264_offer_with_higher_level_negotiates() {
         r.media(mid).unwrap().direction(),
         Direction::SendRecv,
         "Video should stay active after negotiating the H.264 offer"
+    );
+}
+
+/// RFC 8830 3.2.3: "The answer is generated in exactly the same manner as the
+/// offer. `a=msid` values in the offer do not influence the answer."
+///
+/// The offer here uses the `-` stream id, which RFC 8830 defines as "no
+/// MediaStream". Reusing it would make the answer claim our own outgoing track
+/// belongs to no stream, leaving a receiver nothing to bind it to.
+#[test]
+fn answer_msid_is_not_taken_from_the_offer() {
+    init_log();
+    init_crypto_default();
+
+    let mut r = TestRtc::new_with_rtc(info_span!("R"), Rtc::builder().build(Instant::now()));
+
+    // An offer whose audio m-line is tagged with the "no MediaStream" id.
+    let remote_offer = "\
+        v=0\r\n\
+        o=- 123456789 2 IN IP4 127.0.0.1\r\n\
+        s=-\r\n\
+        t=0 0\r\n\
+        a=group:BUNDLE 0\r\n\
+        a=msid-semantic:WMS *\r\n\
+        a=fingerprint:sha-256 00:00:00:00:00:00:00:00\
+        :00:00:00:00:00:00:00:00:00:00:00:00:00:00:00\
+        :00:00:00:00:00:00:00:00:00\r\n\
+        a=ice-ufrag:testufrag\r\n\
+        a=ice-pwd:testpassword12345678\r\n\
+        a=setup:actpass\r\n\
+        m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n\
+        c=IN IP4 0.0.0.0\r\n\
+        a=mid:0\r\n\
+        a=sendrecv\r\n\
+        a=rtcp-mux\r\n\
+        a=rtpmap:111 opus/48000/2\r\n\
+        a=msid:- 4bdebdc4-2f42-4ca9-8326-d40bdbe30a8d\r\n\
+        a=ssrc:1111 cname:remote\r\n\
+        a=ssrc:1111 msid:- 4bdebdc4-2f42-4ca9-8326-d40bdbe30a8d\r\n\
+        ";
+
+    let offer = SdpOffer::from_sdp_string(remote_offer).expect("offer should parse");
+    let answer = r
+        .span
+        .in_scope(|| r.rtc.sdp_api().accept_offer(offer).expect("should accept"));
+
+    let answer_sdp = answer.to_sdp_string();
+
+    assert!(
+        !answer_sdp.contains("a=msid:- "),
+        "Answer must not adopt the offer's \"no MediaStream\" id:\n{answer_sdp}"
+    );
+    assert!(
+        !answer_sdp.contains("4bdebdc4-2f42-4ca9-8326-d40bdbe30a8d"),
+        "Answer must not adopt the offer's track id:\n{answer_sdp}"
+    );
+    assert!(
+        answer_sdp.contains("a=msid:"),
+        "Answer should still carry an msid of its own:\n{answer_sdp}"
     );
 }
 

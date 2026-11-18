@@ -11,9 +11,9 @@
 
 [package]
 edition = "2024"
-rust-version = "1.85.0"
+rust-version = "1.89.0"
 name = "str0m"
-version = "0.23.1"
+version = "0.25.0"
 authors = [
     "Martin Algesten <martin@algesten.se>",
     "Hugo Tunius <h@tunius.se>",
@@ -60,7 +60,7 @@ default = [
     "examples",
 ]
 drv = ["dep:drv"]
-examples = ["rouille/rustls"]
+examples = []
 openssl = ["dep:str0m-openssl"]
 openssl-dimpl = [
     "dep:str0m-openssl",
@@ -74,10 +74,7 @@ rust-crypto = ["dep:str0m-rust-crypto"]
 unversioned = []
 vendored = ["str0m-openssl?/vendored"]
 wincrypto = ["dep:str0m-wincrypto"]
-wincrypto-dimpl = [
-    "dep:str0m-wincrypto",
-    "str0m-wincrypto/dimpl",
-]
+wincrypto-dimpl = ["wincrypto"]
 
 [lib]
 name = "str0m"
@@ -89,6 +86,10 @@ version = "1"
 [[test]]
 name = "abs-capture-time"
 path = "tests/abs-capture-time.rs"
+
+[[test]]
+name = "amr-wb"
+path = "tests/amr-wb.rs"
 
 [[test]]
 name = "api-errors"
@@ -155,12 +156,24 @@ name = "dtls-close"
 path = "tests/dtls-close.rs"
 
 [[test]]
+name = "dtls-error-readiness"
+path = "tests/dtls-error-readiness.rs"
+
+[[test]]
+name = "dtls-fingerprint"
+path = "tests/dtls-fingerprint.rs"
+
+[[test]]
 name = "dtls-retransmit"
 path = "tests/dtls-retransmit.rs"
 
 [[test]]
 name = "dtls-security"
 path = "tests/dtls-security.rs"
+
+[[test]]
+name = "early-rtx-padding"
+path = "tests/early-rtx-padding.rs"
 
 [[test]]
 name = "flappy-ice-state"
@@ -189,6 +202,10 @@ path = "tests/ice-remote-binding-keepalive.rs"
 [[test]]
 name = "ice-restart"
 path = "tests/ice-restart.rs"
+
+[[test]]
+name = "idle-rtc"
+path = "tests/idle-rtc.rs"
 
 [[test]]
 name = "keyframe-requests"
@@ -231,12 +248,24 @@ name = "no-pre-ice-feedback"
 path = "tests/no-pre-ice-feedback.rs"
 
 [[test]]
+name = "partial-init"
+path = "tests/partial-init.rs"
+
+[[test]]
 name = "pii"
 path = "tests/pii.rs"
 
 [[test]]
 name = "pli-feedback"
 path = "tests/pli-feedback.rs"
+
+[[test]]
+name = "poll-scaling"
+path = "tests/poll-scaling.rs"
+
+[[test]]
+name = "red"
+path = "tests/red.rs"
 
 [[test]]
 name = "remb"
@@ -249,6 +278,10 @@ path = "tests/remove-media-while-pacer-queued.rs"
 [[test]]
 name = "repeated"
 path = "tests/repeated.rs"
+
+[[test]]
+name = "rtcp-request-timeout"
+path = "tests/rtcp-request-timeout.rs"
 
 [[test]]
 name = "rtp-direct-csrc"
@@ -295,8 +328,28 @@ name = "sdp-negotiation"
 path = "tests/sdp-negotiation.rs"
 
 [[test]]
+name = "sdp-rtx-apt"
+path = "tests/sdp-rtx-apt.rs"
+
+[[test]]
+name = "sdp-unique-mids"
+path = "tests/sdp-unique-mids.rs"
+
+[[test]]
+name = "simulcast-rid-mapping"
+path = "tests/simulcast-rid-mapping.rs"
+
+[[test]]
 name = "srtp-replay-attack"
 path = "tests/srtp-replay-attack.rs"
+
+[[test]]
+name = "ssrc-zero-probe"
+path = "tests/ssrc-zero-probe.rs"
+
+[[test]]
+name = "ssrc_zero_feedback"
+path = "tests/ssrc_zero_feedback.rs"
 
 [[test]]
 name = "stale-network-time-after-pause"
@@ -309,6 +362,10 @@ path = "tests/stats.rs"
 [[test]]
 name = "stream-lifecycle"
 path = "tests/stream-lifecycle.rs"
+
+[[test]]
+name = "tele"
+path = "tests/tele.rs"
 
 [[test]]
 name = "twcc"
@@ -330,6 +387,10 @@ path = "tests/user-rtp-header-extension.rs"
 name = "vla"
 path = "tests/vla.rs"
 
+[[test]]
+name = "writer-borrow"
+path = "tests/writer-borrow.rs"
+
 [dependencies.arrayvec]
 version = "0.7.6"
 
@@ -340,7 +401,7 @@ version = "1"
 version = "4.6.6"
 
 [dependencies.dimpl]
-version = "0.7.1"
+version = "0.9.0"
 default-features = false
 
 [dependencies.drv]
@@ -351,44 +412,44 @@ optional = true
 version = "2.0.1"
 
 [dependencies.is]
-version = "0.11.0"
+version = "0.12.0"
 default-features = false
 
 [dependencies.sctp-proto]
-version = "0.10.4"
+version = "0.10.8"
 
 [dependencies.serde]
 version = "1.0.152"
 features = ["derive"]
 
 [dependencies.str0m-aws-lc-rs]
-version = "0.6.0"
+version = "0.7.0"
 optional = true
 
 [dependencies.str0m-openssl]
-version = "0.6.0"
+version = "0.7.0"
 optional = true
 
 [dependencies.str0m-proto]
-version = "0.7.0"
+version = "0.8.0"
 features = ["dtls"]
 default-features = false
 
 [dependencies.str0m-rust-crypto]
-version = "0.6.0"
+version = "0.7.0"
 optional = true
 
 [dependencies.subtle]
 version = "2.0.0"
 
 [dependencies.time]
-version = "0.3"
+version = "0.3.47"
 
 [dependencies.tracing]
 version = "0.1.37"
 
 [dev-dependencies.netem]
-version = "0.4.0"
+version = "0.5.0"
 package = "str0m-netem"
 
 [dev-dependencies.pcap-file]
@@ -400,14 +461,11 @@ version = "0.9.0"
 [dev-dependencies.regex]
 version = "1.11.1"
 
-[dev-dependencies.rouille]
-version = "3.6.2"
-
 [dev-dependencies.serde_json]
 version = "1.0"
 
 [dev-dependencies.str0m-rust-crypto]
-version = "0.6.0"
+version = "0.7.0"
 
 [dev-dependencies.systemstat]
 version = "0.2.2"
@@ -426,9 +484,9 @@ features = [
 version = "2"
 
 [target.'cfg(target_vendor = "apple")'.dependencies.str0m-apple-crypto]
-version = "0.6.0"
+version = "0.7.0"
 optional = true
 
 [target."cfg(windows)".dependencies.str0m-wincrypto]
-version = "0.8.0"
+version = "0.9.0"
 optional = true

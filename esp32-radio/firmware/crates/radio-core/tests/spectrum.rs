@@ -21,7 +21,7 @@ fn window_keeps_the_latest_pcm_and_applies_periodic_hann() {
     assert_eq!(fft[0], 0.0);
     assert!((fft[FFT_SIZE] - 3072.0 / 32768.0).abs() < 1e-6);
     assert!((fft[FFT_SIZE / 2] - 2560.0 / 32768.0 * 0.5).abs() < 1e-6);
-    assert!(fft.chunks_exact(2).all(|pair| pair[1] == 0.0));
+    assert!(fft.as_chunks::<2>().0.iter().all(|pair| pair[1] == 0.0));
     window.clear();
     assert!(!window.write_complex(&mut fft).unwrap());
 }

@@ -502,4 +502,25 @@ mod test {
 
         Ok(())
     }
+
+    #[test]
+    fn test_partial_decode_finish_init_trailing_param_without_value() -> Result<()> {
+        // An INIT whose last parameter carries no value, decoded through the
+        // same two steps an association performs on an inbound datagram.
+        let raw_pkt = Bytes::from_static(&[
+            0x13, 0x88, 0x13, 0x88, 0x00, 0x00, 0x00, 0x00, 0x92, 0x57, 0x55, 0xc7, 0x01, 0x00,
+            0x00, 0x20, 0x12, 0x34, 0x56, 0x78, 0x00, 0x02, 0x00, 0x00, 0x04, 0x00, 0x04, 0x00,
+            0x00, 0x00, 0x00, 0x01, 0x80, 0x08, 0x00, 0x08, 0x82, 0xc0, 0x40, 0xc2, 0xc0, 0x00,
+            0x00, 0x04,
+        ]);
+
+        let partial = PartialDecode::unmarshal(&raw_pkt)?;
+        assert_eq!(partial.first_chunk_type, CT_INIT);
+        assert_eq!(partial.initiate_tag, Some(0x1234_5678));
+
+        let pkt = partial.finish()?;
+        assert_eq!(pkt.chunks.len(), 1, "expected a single INIT chunk");
+
+        Ok(())
+    }
 }

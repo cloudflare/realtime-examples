@@ -277,3 +277,74 @@ fn test_build_param_failure() -> Result<()> {
 
     Ok(())
 }
+
+///////////////////////////////////////////////////////////////////
+//param_supported_address_types_test
+///////////////////////////////////////////////////////////////////
+use super::param_supported_address_types::*;
+
+static PARAM_SUPPORTED_ADDRESS_TYPES_BYTES: Bytes =
+    Bytes::from_static(&[0x0, 0xc, 0x0, 0x6, 0x0, 0x5]);
+
+#[test]
+fn test_param_supported_address_types_success() -> Result<()> {
+    let tests = vec![
+        (
+            PARAM_SUPPORTED_ADDRESS_TYPES_BYTES.clone(),
+            ParamSupportedAddressTypes {
+                address_types: vec![ParamType::Ipv4Addr],
+            },
+        ),
+        (
+            Bytes::from_static(&[0x0, 0xc, 0x0, 0x8, 0x0, 0x5, 0x0, 0x6]),
+            ParamSupportedAddressTypes {
+                address_types: vec![ParamType::Ipv4Addr, ParamType::Ipv6Addr],
+            },
+        ),
+        (
+            Bytes::from_static(&[0x0, 0xc, 0x0, 0x8, 0x0, 0x5, 0x0, 0xb]),
+            ParamSupportedAddressTypes {
+                address_types: vec![ParamType::Ipv4Addr, ParamType::HostNameAddr],
+            },
+        ),
+        (
+            Bytes::from_static(&[0x0, 0xc, 0x0, 0x8, 0x0, 0x5, 0x9, 0x9]),
+            ParamSupportedAddressTypes {
+                address_types: vec![
+                    ParamType::Ipv4Addr,
+                    ParamType::Unknown { param_type: 0x0909 },
+                ],
+            },
+        ),
+    ];
+
+    for (binary, parsed) in tests {
+        let actual = ParamSupportedAddressTypes::unmarshal(&binary)?;
+        assert_eq!(parsed, actual);
+        let b = actual.marshal()?;
+        assert_eq!(binary, b);
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_param_supported_address_types_failure() -> Result<()> {
+    let tests = vec![(
+        "odd reported length",
+        Bytes::from_static(&[0x0, 0xc, 0x0, 0x5, 0x5, 0x0, 0x0, 0x0]),
+        Error::ErrSupportedAddressTypesParamInvalidLength,
+    )];
+
+    for (name, binary, expected) in tests {
+        let result = ParamSupportedAddressTypes::unmarshal(&binary);
+        assert_eq!(
+            Err(expected),
+            result,
+            "expected unmarshal: {} to fail.",
+            name
+        );
+    }
+
+    Ok(())
+}

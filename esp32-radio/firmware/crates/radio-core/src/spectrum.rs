@@ -108,12 +108,12 @@ impl<'a> Window<'a> {
     }
 
     pub fn push_stereo(&mut self, pcm: &[i16]) -> Result<(), InvalidBuffer> {
-        if pcm.len() % 2 != 0 {
+        let (samples, remainder) = pcm.as_chunks::<2>();
+        if !remainder.is_empty() {
             return Err(InvalidBuffer);
         }
-        for sample in pcm.chunks_exact(2) {
-            self.storage[self.position] =
-                (i32::from(sample[0]) + i32::from(sample[1])) as f32 / 65536.0;
+        for &[left, right] in samples {
+            self.storage[self.position] = (i32::from(left) + i32::from(right)) as f32 / 65536.0;
             self.position = (self.position + 1) % FFT_SIZE;
             self.filled = (self.filled + 1).min(FFT_SIZE);
         }
@@ -128,7 +128,8 @@ impl<'a> Window<'a> {
         if self.filled < FFT_SIZE {
             return Ok(false);
         }
-        for (i, pair) in out.chunks_exact_mut(2).enumerate() {
+        let (pairs, _) = out.as_chunks_mut::<2>();
+        for (i, pair) in pairs.iter_mut().enumerate() {
             pair[0] = self.storage[(self.position + i) % FFT_SIZE] * self.storage[FFT_SIZE + i];
             pair[1] = 0.0;
         }

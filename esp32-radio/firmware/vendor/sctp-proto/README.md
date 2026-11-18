@@ -42,3 +42,32 @@ to the str0m maintainers in January 2026.
 [rtc-sctp]: https://github.com/webrtc-rs/rtc/tree/master/rtc-sctp
 
 License: MIT/Apache-2.0
+
+### Data-channel statistics
+
+`Stream::stats()` returns cumulative `DataChannelStats` for one stream generation. Sent totals count
+successful SCTP message acceptance; received totals count complete messages returned by `read` or
+`read_sctp`. Fragmentation, retransmission, acknowledgements and partial consumption of the returned
+`Chunks` do not add messages. `write_chunks` currently accepts the first non-empty buffer as one message
+per call. DCEP and unknown PPIDs are excluded; empty-message PPIDs count one message and zero bytes
+when sent with the RFC 8831 dummy byte. Text counts UTF-8 bytes. Counters saturate at `u64::MAX`.
+
+For an embedding WebRTC report, map the four native counters to `messagesSent`, `bytesSent`,
+`messagesReceived` and `bytesReceived`, and `stream_identifier` to `dataChannelIdentifier`.
+For example, use an application-assigned association identity together with `generation` to allocate a
+unique report `id`, supply `type = "data-channel"` and the report `timestamp`, and obtain `label`,
+`protocol` and WebRTC `state` from the embedding channel. Convert message counters to WebIDL's `u32`
+with an explicit overflow policy (for example, `u32::try_from(value).unwrap_or(u32::MAX)`).
+Generation IDs never wrap: exhaustion prevents creation of another stream.
+
+Drain `Association::poll()` after reads, close/reset operations and transport input, including after
+association loss. `Event::DataChannelStatsFinal(snapshot)` transfers the final counters exactly once
+when a stream generation is removed, after any retained messages have been drained or discarded.
+Store that snapshot in the embedding report registry for the required closed-channel lifetime.
+Reset completion and failure events retain their existing ordering; a reused stream ID has a new
+generation and fresh counters. Poll final events before dropping the association.
+
+These are SCTP boundary counters. If WebRTC buffers sends above SCTP or discards a read message before
+firing its message event, the adapter must maintain counters at its actual API boundary; the native
+receive count already includes that transport handoff. Peer-connection channel-open/close totals,
+channel state and report retention belong to the embedding layer.

@@ -98,6 +98,26 @@ fn config_reordering_size_custom() -> Result<(), RtcError> {
     Ok(())
 }
 
+/// Test timeout defaults and configuration round-trips, including large durations.
+#[test]
+fn config_audio_reordering_timeout_custom() {
+    assert_eq!(
+        RtcConfig::new().reordering_timeout_audio(),
+        Some(Duration::from_secs(1))
+    );
+    for timeout in [
+        None,
+        Some(Duration::ZERO),
+        Some(Duration::from_millis(250)),
+        Some(Duration::from_secs(601)),
+        Some(Duration::MAX),
+    ] {
+        let config = RtcConfig::new().set_reordering_timeout_audio(timeout);
+        assert_eq!(config.reordering_timeout_audio(), timeout);
+        assert_eq!(config.clone().reordering_timeout_audio(), timeout);
+    }
+}
+
 /// Test enable_raw_packets(true) produces RawPacket events.
 #[test]
 fn config_raw_packets_enabled() -> Result<(), RtcError> {

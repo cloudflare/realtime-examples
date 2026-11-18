@@ -9,6 +9,8 @@ mod changing;
 mod delay;
 mod estimate;
 mod loss;
+mod minimum;
 mod probes;
+mod queue_time;
 mod recovery;
 mod simple;

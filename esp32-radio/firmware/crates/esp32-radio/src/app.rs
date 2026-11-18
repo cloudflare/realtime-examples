@@ -51,7 +51,7 @@ pub(crate) fn run() -> Result<()> {
         let _configuration = SpawnConfig::radio()?;
         thread::Builder::new()
             .name("radio".into())
-            .stack_size(49_152)
+            .stack_size(SpawnConfig::RADIO_STACK_BYTES)
             .spawn(move || {
                 if let Err(error) = radio::run(
                     board,

@@ -215,6 +215,9 @@ impl Endpoint {
         if remote.port() == 0 {
             return Err(ConnectError::InvalidRemoteAddress(remote));
         }
+        if config.transport.local_port() == 0 || config.transport.remote_port() == 0 {
+            return Err(ConnectError::InvalidSctpPort);
+        }
 
         match (config.local_sctp_init, config.remote_sctp_init) {
             (Some(local_init), Some(remote_init)) => {
@@ -580,6 +583,9 @@ pub enum ConnectError {
     /// Examples include attempting to connect to port 0, or using an inappropriate address family.
     #[error("invalid remote address: {0}")]
     InvalidRemoteAddress(SocketAddr),
+    /// The configured SCTP source or destination port is zero.
+    #[error("SCTP source and destination ports must be nonzero")]
+    InvalidSctpPort,
     /// No default client configuration was set up
     ///
     /// Use `Endpoint::connect_with` to specify a client configuration.

@@ -10,10 +10,12 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 pub use sctp_proto::ReceiveLimits as SctpReceiveLimits;
 use sctp_proto::{Association, AssociationHandle, DatagramEvent};
-use sctp_proto::{Endpoint, EndpointConfig, Stream, StreamEvent, Transmit};
-use sctp_proto::{Event, Payload, PayloadProtocolIdentifier, ServerConfig, TransportConfig};
+use sctp_proto::{Endpoint, EndpointConfig, Stream, StreamEvent, Transmit, TransportConfig};
+use sctp_proto::{Event, Payload, PayloadProtocolIdentifier, ServerConfig};
 
 use snap::{b64_encode, webrtc_transport_config};
+
+use crate::poll::Wake;
 
 pub use sctp_proto::Error as ProtoError;
 use sctp_proto::ReliabilityType;
@@ -28,10 +30,12 @@ use dcep::DcepOpen;
 mod error;
 pub use error::SctpError;
 
-/// Bytes that can be buffered inside str0m across all streams.
-const MAX_BUFFERED_ACROSS_STREAMS: usize = 128 * 1024;
+/// Default bytes that can be buffered inside str0m across all streams.
+///
+/// Configured by `RtcConfig::set_sctp_max_buffered_amount`.
+pub(crate) const DEFAULT_MAX_BUFFERED_AMOUNT: usize = 128 * 1024;
 
-/// Maximum message size we advertise in SDP (what we can receive)
+/// Default maximum message size we advertise in SDP (what we can receive).
 pub const LOCAL_MAX_MESSAGE_SIZE: u32 = 256 * 1024;
 
 /// Default max message size if remote doesn't advertise
@@ -53,12 +57,15 @@ pub(crate) struct RtcSctp {
     // be sent after Close.
     reset_complete: VecDeque<u16>,
     pushed_back_transmit: Option<VecDeque<Bytes>>,
-    receive_limits: Option<SctpReceiveLimits>,
+    transport: Arc<TransportConfig>,
     last_now: Instant,
     client: bool,
+    local_max_message_size: u32,
     remote_max_message_size: u32,
     snap_enabled: bool,
     snap_init: Option<SctpInitData>,
+    /// Bytes that can be buffered across all streams before `available()` is 0.
+    max_buffered_amount: usize,
     #[cfg(test)]
     max_payload_size: usize,
 }
@@ -289,11 +296,15 @@ const _: () = assert!(
 
 impl RtcSctp {
     #[cfg(test)]
-    pub fn new(mtu: usize) -> Self {
-        Self::with_receive_limits(mtu, None)
+    pub fn new(mtu: usize, local_max_message_size: u32) -> Self {
+        Self::with_receive_limits(mtu, local_max_message_size, None)
     }
 
-    pub fn with_receive_limits(mtu: usize, receive_limits: Option<SctpReceiveLimits>) -> Self {
+    pub fn with_receive_limits(
+        mtu: usize,
+        local_max_message_size: u32,
+        receive_limits: Option<SctpReceiveLimits>,
+    ) -> Self {
         let mut config = EndpointConfig::default();
         let max_payload = mtu
             .saturating_sub(crate::io::MAX_DTLS_OVERHEAD)
@@ -302,7 +313,8 @@ impl RtcSctp {
         #[cfg(test)]
         let max_payload_size = max_payload;
         let mut server_config = ServerConfig::default();
-        server_config.transport = webrtc_transport_config(receive_limits);
+        let transport = webrtc_transport_config(local_max_message_size, receive_limits);
+        server_config.transport = transport.clone();
         let endpoint = Endpoint::new(Arc::new(config), Some(Arc::new(server_config)));
         let fake_addr = "1.1.1.1:5000".parse().unwrap();
 
@@ -316,12 +328,14 @@ impl RtcSctp {
             reset_pending: HashSet::new(),
             reset_complete: VecDeque::new(),
             pushed_back_transmit: None,
-            receive_limits,
+            transport,
             last_now: Instant::now(), // placeholder until init()
             client: false,
+            local_max_message_size,
             remote_max_message_size: DEFAULT_REMOTE_MAX_MESSAGE_SIZE,
             snap_enabled: false,
             snap_init: None,
+            max_buffered_amount: DEFAULT_MAX_BUFFERED_AMOUNT,
             #[cfg(test)]
             max_payload_size,
         }
@@ -372,10 +386,7 @@ impl RtcSctp {
                 )));
             }
 
-            // Enforce the local resource policy for both SDP and direct SNAP.
-            if self.receive_limits.is_some() {
-                snap_data.transport = webrtc_transport_config(self.receive_limits);
-            }
+            snap_data.transport = self.transport.clone();
             let config = snap_data.into_client_config();
             debug!(
                 "New {} association (out-of-band: true)",
@@ -399,22 +410,14 @@ impl RtcSctp {
             set_state(&mut self.state, RtcSctpState::Established);
         } else if client {
             // Normal client path: initiate the SCTP association.
-            let mut config = SctpInitData::default().into_client_config();
-            let mut transport = TransportConfig::default()
-                .with_max_init_retransmits(None)
-                .with_max_data_retransmits(None)
-                .with_max_receive_message_size(LOCAL_MAX_MESSAGE_SIZE)
-                .with_max_send_message_size(self.remote_max_message_size);
-            if let Some(limits) = self.receive_limits {
-                transport = transport.with_receive_limits(limits);
-            }
-            config.transport = Arc::new(transport);
+            let config = SctpInitData::from_transport(self.transport.clone()).into_client_config();
 
             debug!("New local association (out-of-band: false)");
-            let (handle, assoc) = self
+            let (handle, mut assoc) = self
                 .endpoint
                 .connect(config, self.fake_addr)
                 .map_err(|e| SctpError::Proto(ProtoError::Other(e.to_string())))?;
+            assoc.set_max_send_message_size(self.remote_max_message_size);
             self.handle = handle;
             self.assoc = Some(assoc);
             set_state(&mut self.state, RtcSctpState::AwaitAssociationEstablished);
@@ -426,20 +429,23 @@ impl RtcSctp {
         Ok(())
     }
 
-    pub fn local_max_message_size(&self) -> u32 {
-        self.receive_limits
-            .map_or(LOCAL_MAX_MESSAGE_SIZE, SctpReceiveLimits::max_message_size)
-    }
-
     pub fn is_client(&self) -> bool {
         self.client
+    }
+
+    pub fn local_max_message_size(&self) -> u32 {
+        self.local_max_message_size
     }
 
     /// Enable SNAP by pre-populating the init data.
     pub fn enable_snap(&mut self) {
         self.snap_enabled = true;
         self.snap_init
-            .get_or_insert_with(|| SctpInitData::with_optional_receive_limits(self.receive_limits));
+            .get_or_insert_with(|| SctpInitData::from_transport(self.transport.clone()));
+    }
+
+    pub fn set_max_buffered_amount(&mut self, max_buffered_amount: usize) {
+        self.max_buffered_amount = max_buffered_amount;
     }
 
     /// Whether local offers should opt in to SNAP.
@@ -452,7 +458,7 @@ impl RtcSctp {
     pub fn ensure_local_snap_init(&mut self) -> bool {
         let init_data = self
             .snap_init
-            .get_or_insert_with(|| SctpInitData::with_optional_receive_limits(self.receive_limits));
+            .get_or_insert_with(|| SctpInitData::from_transport(self.transport.clone()));
         if init_data.local_init_chunk().is_err() {
             self.snap_init = None;
             false
@@ -504,7 +510,7 @@ impl RtcSctp {
     pub fn set_remote_snap_init_string(&mut self, value: &str) -> bool {
         let init_data = self
             .snap_init
-            .get_or_insert_with(|| SctpInitData::with_optional_receive_limits(self.receive_limits));
+            .get_or_insert_with(|| SctpInitData::from_transport(self.transport.clone()));
         match init_data.set_remote_init_string(value) {
             Ok(()) => true,
             Err(_) => {
@@ -630,7 +636,7 @@ impl RtcSctp {
             })
             .sum();
 
-        MAX_BUFFERED_ACROSS_STREAMS.saturating_sub(total)
+        self.max_buffered_amount.saturating_sub(total)
     }
 
     pub fn write(&mut self, id: u16, binary: bool, buf: &[u8]) -> Result<usize, SctpError> {
@@ -720,9 +726,11 @@ impl RtcSctp {
         }
     }
 
-    pub fn handle_timeout(&mut self, now: Instant) {
+    pub fn handle_timeout(&mut self, now: Instant, wake: &mut Wake) {
         if self.state == RtcSctpState::Uninited {
             // Need to call `init()` before any timeouts are accepted.
+            wake.no_events();
+            wake.no_timeout();
             return;
         }
 
@@ -732,6 +740,9 @@ impl RtcSctp {
         self.entries.retain(|e| e.state != StreamEntryState::Closed);
 
         let Some(assoc) = &mut self.assoc else {
+            // No association can produce output. Keep the timer wake because
+            // advancing last_now can move the stream-open retry deadline.
+            wake.no_events();
             return;
         };
 
@@ -756,10 +767,10 @@ impl RtcSctp {
     }
 
     pub fn do_poll(&mut self) -> Option<SctpEvent> {
-        // A completed handshake or a written DCEP open can produce more to send, so
-        // those start over from the top instead of falling through. There is one
-        // restart per channel waiting to open, which is why this is a loop and not
-        // recursion.
+        // Handshakes, DCEP writes, and deferred stream closes can leave more work.
+        // Restart until that work is drained before reporting None: the RTC caches
+        // an idle result. Each restart advances a handshake or opens/closes a stream;
+        // use a loop so draining many channels does not grow the stack.
         'restart: loop {
             if self.state == RtcSctpState::Uninited {
                 // Need to call `init()` before any polling starts.
@@ -1020,7 +1031,7 @@ impl RtcSctp {
                         // This is expected on browser refresh or similar abrupt shutdown.
                         debug!("Getting stream {} failed: {:?}", entry.id, e);
                         entry.do_close = true;
-                        continue;
+                        continue 'restart;
                     }
                 };
 
@@ -1032,7 +1043,7 @@ impl RtcSctp {
                         debug!("Setting buffered_amount_low_threshold failed: {:?}", e);
                         entry.do_close = true;
                         entry.buffered_threshold = BufferedThresholdConfig::Unconfigured;
-                        continue;
+                        continue 'restart;
                     }
 
                     entry.buffered_threshold = BufferedThresholdConfig::Configured(x);
@@ -1065,7 +1076,7 @@ impl RtcSctp {
                                     Err(e) => {
                                         warn!("Failed to read incoming DCEP {}: {:?}", entry.id, e);
                                         entry.do_close = true;
-                                        continue;
+                                        continue 'restart;
                                     }
                                 };
 
@@ -1079,7 +1090,7 @@ impl RtcSctp {
                                 // Without this, the DCEP-receiving side of an in-band channel sends
                                 // with stream defaults: ordered and fully reliable.
                                 if !entry.configure_reliability(&mut stream) {
-                                    continue;
+                                    continue 'restart;
                                 }
 
                                 let mut obuf = [0];
@@ -1117,7 +1128,7 @@ impl RtcSctp {
                                 if let Err(e) = res {
                                     warn!("Failed to read incoming DCEP ACK {}: {:?}", entry.id, e);
                                     entry.do_close = true;
-                                    continue;
+                                    continue 'restart;
                                 }
 
                                 entry.set_state(StreamEntryState::Open);
@@ -1134,12 +1145,15 @@ impl RtcSctp {
                                     entry.id, entry.state
                                 );
                                 entry.do_close = true;
-                                continue;
+                                continue 'restart;
                             }
                         }
                     }
                     Ok(None) => continue,
-                    Err(_) => entry.do_close = true,
+                    Err(_) => {
+                        entry.do_close = true;
+                        continue 'restart;
+                    }
                 }
             }
 
@@ -1407,6 +1421,48 @@ impl From<(ReliabilityType, u32)> for Reliability {
 mod tests {
     use super::*;
 
+    use crate::poll::Readiness;
+
+    #[test]
+    fn readiness_uninitialized_sctp_timeout_does_not_wake() {
+        let now = Instant::now();
+        let mut sctp = RtcSctp::new(DATAGRAM_MTU_TARGET, LOCAL_MAX_MESSAGE_SIZE);
+        let mut readiness = Readiness::idle();
+        sctp.handle_timeout(now, &mut readiness.wake());
+        assert!(!readiness.wants_events());
+        assert!(!readiness.wants_timeout());
+        assert!(sctp.poll_timeout().is_none());
+        assert!(sctp.poll().is_none());
+    }
+
+    #[test]
+    fn readiness_passive_sctp_timeout_does_not_wake_events() {
+        let now = Instant::now();
+        let mut sctp = RtcSctp::new(DATAGRAM_MTU_TARGET, LOCAL_MAX_MESSAGE_SIZE);
+        sctp.init(false, now, None, None).unwrap();
+        assert!(sctp.assoc.is_none());
+        let mut readiness = Readiness::idle();
+        sctp.handle_timeout(now, &mut readiness.wake());
+        assert!(!readiness.wants_events());
+        assert!(readiness.wants_timeout());
+        assert!(sctp.poll().is_none());
+    }
+
+    #[test]
+    fn readiness_sctp_retransmission_keeps_both_signals() {
+        let now = Instant::now();
+        let mut sctp = RtcSctp::new(DATAGRAM_MTU_TARGET, LOCAL_MAX_MESSAGE_SIZE);
+        sctp.init(true, now, None, None).unwrap();
+        while sctp.poll().is_some() {}
+        let deadline = sctp.poll_timeout().unwrap();
+        let mut readiness = Readiness::idle();
+        sctp.handle_timeout(deadline, &mut readiness.wake());
+        assert!(readiness.wants_events());
+        assert!(readiness.wants_timeout());
+        assert!(matches!(sctp.poll(), Some(SctpEvent::Transmit { .. })));
+        assert!(sctp.poll_timeout().unwrap() > deadline);
+    }
+
     /// Insert an entry directly, keeping `entries` sorted by id.
     fn insert_entry(entries: &mut Vec<StreamEntry>, entry: StreamEntry) {
         let idx = entry_index(entries, entry.id).expect_err("entry should not already exist");
@@ -1417,7 +1473,7 @@ mod tests {
     #[test]
     fn partial_snap_init_requires_both_chunks() {
         let now = Instant::now();
-        let mut sctp = RtcSctp::new(DATAGRAM_MTU_TARGET);
+        let mut sctp = RtcSctp::new(DATAGRAM_MTU_TARGET, LOCAL_MAX_MESSAGE_SIZE);
         let mut init_data = SctpInitData::new();
 
         init_data.local_init_chunk().unwrap();
@@ -1431,7 +1487,7 @@ mod tests {
 
     #[test]
     fn malformed_remote_snap_does_not_disable_local_opt_in() {
-        let mut sctp = RtcSctp::new(DATAGRAM_MTU_TARGET);
+        let mut sctp = RtcSctp::new(DATAGRAM_MTU_TARGET, LOCAL_MAX_MESSAGE_SIZE);
         sctp.enable_snap();
 
         assert!(!sctp.set_remote_snap_init_string("!!!not-valid-base64!!!"));
@@ -1450,8 +1506,12 @@ mod tests {
         server_limits: Option<SctpReceiveLimits>,
     ) -> (RtcSctp, RtcSctp) {
         let now = Instant::now();
-        let mut client = RtcSctp::with_receive_limits(DATAGRAM_MTU_TARGET, client_limits);
-        let mut server = RtcSctp::with_receive_limits(DATAGRAM_MTU_TARGET, server_limits);
+        let make_peer = |limits: Option<SctpReceiveLimits>| {
+            let size = limits.map_or(LOCAL_MAX_MESSAGE_SIZE, SctpReceiveLimits::max_message_size);
+            RtcSctp::with_receive_limits(DATAGRAM_MTU_TARGET, size, limits)
+        };
+        let mut client = make_peer(client_limits);
+        let mut server = make_peer(server_limits);
 
         client.init(true, now, None, None).unwrap();
         server.init(false, now, None, None).unwrap();
@@ -1549,8 +1609,8 @@ mod tests {
                 let mut lost = false;
                 for _ in 0..200 {
                     now += Duration::from_millis(10);
-                    sender.handle_timeout(now);
-                    receiver.handle_timeout(now);
+                    sender.handle_timeout(now, &mut crate::poll::Readiness::idle().wake());
+                    receiver.handle_timeout(now, &mut crate::poll::Readiness::idle().wake());
                     pump(sender, receiver);
                     for event in pump(receiver, sender) {
                         match event {
@@ -1582,7 +1642,11 @@ mod tests {
         let mut direct = SctpInitData::with_receive_limits(limits);
         let init = direct.local_init_chunk().unwrap();
         assert_eq!(u32::from_be_bytes(init[8..12].try_into().unwrap()), 32768);
-        let mut sctp = RtcSctp::with_receive_limits(DATAGRAM_MTU_TARGET, Some(limits));
+        let mut sctp = RtcSctp::with_receive_limits(
+            DATAGRAM_MTU_TARGET,
+            limits.max_message_size(),
+            Some(limits),
+        );
         sctp.enable_snap();
         assert!(sctp.ensure_local_snap_init());
         let init = sctp
@@ -1612,6 +1676,101 @@ mod tests {
             assert_eq!(packet.as_ptr(), pointers[n]);
             assert!(packet.iter().all(|byte| *byte == n as u8 + 1));
         }
+    }
+
+    fn assert_close_before_idle(sctp: &mut RtcSctp, id: u16) {
+        for _ in 0..100 {
+            match sctp.poll() {
+                Some(SctpEvent::Close {
+                    id: closed,
+                    reset_pending,
+                }) => {
+                    assert_eq!(closed, id);
+                    assert!(reset_pending, "the malformed stream must start a reset");
+                    return;
+                }
+                Some(_) => {}
+                None => panic!("SCTP reported idle before draining the deferred close"),
+            }
+        }
+        panic!("SCTP did not finish draining");
+    }
+
+    fn transfer_transmits(from: &mut RtcSctp, to: &mut RtcSctp) {
+        while let Some(t) = from.poll_transmit() {
+            if let Some(packets) = transmit_to_vec(t) {
+                for packet in packets {
+                    to.handle_input(to.last_now, &packet);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_dcep_open_closes_before_idle() {
+        let (mut client, mut server) = connect_client_server();
+        // Send an actual SCTP DATA chunk with an invalid DCEP OPEN body.
+        client
+            .assoc
+            .as_mut()
+            .unwrap()
+            .open_stream(0, PayloadProtocolIdentifier::Dcep)
+            .unwrap()
+            .write_with_ppi(&[0xff], PayloadProtocolIdentifier::Dcep)
+            .unwrap();
+        transfer_transmits(&mut client, &mut server);
+        assert_close_before_idle(&mut server, 0);
+    }
+
+    #[test]
+    fn unexpected_dcep_on_open_stream_closes_before_idle() {
+        let (mut client, mut server) = connect_client_server();
+        let config = ChannelConfig {
+            negotiated: Some(0),
+            ..Default::default()
+        };
+        client.open_stream(0, config.clone());
+        server.open_stream(0, config);
+        assert!(matches!(client.poll(), Some(SctpEvent::Open { id: 0, .. })));
+        assert!(matches!(server.poll(), Some(SctpEvent::Open { id: 0, .. })));
+        client
+            .assoc
+            .as_mut()
+            .unwrap()
+            .stream(0)
+            .unwrap()
+            .write_with_ppi(&[2], PayloadProtocolIdentifier::Dcep)
+            .unwrap();
+        transfer_transmits(&mut client, &mut server);
+        assert_close_before_idle(&mut server, 0);
+    }
+
+    #[test]
+    fn malformed_dcep_ack_closes_before_idle() {
+        let (mut client, mut server) = connect_client_server();
+        client.open_stream(0, ChannelConfig::default());
+        while let Some(event) = client.poll() {
+            if let SctpEvent::Transmit { packets } = event {
+                for packet in packets {
+                    server.handle_input(server.last_now, &packet);
+                }
+            }
+        }
+        assert_eq!(
+            entry_by_id_mut(&mut client.entries, 0).unwrap().state,
+            StreamEntryState::AwaitDcepAck
+        );
+        // Bypass the server's DCEP handler to return a malformed ACK over SCTP.
+        server
+            .assoc
+            .as_mut()
+            .unwrap()
+            .stream(0)
+            .unwrap()
+            .write_with_ppi(&[0xff], PayloadProtocolIdentifier::Dcep)
+            .unwrap();
+        transfer_transmits(&mut server, &mut client);
+        assert_close_before_idle(&mut client, 0);
     }
 
     /// A stream the remote opened can be gone from the association by the time the
@@ -1720,7 +1879,8 @@ mod tests {
 
         // Past the deadline the open gives up and closes.
         let later = Instant::now() + STREAM_OPEN_TIMEOUT + Duration::from_secs(1);
-        client.handle_timeout(later);
+        let mut readiness = crate::poll::Readiness::armed();
+        client.handle_timeout(later, &mut readiness.wake());
         let event = client.do_poll();
 
         assert!(
@@ -1880,13 +2040,13 @@ mod tests {
     fn max_payload_size_matches_mtu_minus_overhead() {
         let overhead = crate::io::MAX_DTLS_OVERHEAD + SCTP_OVERHEAD;
 
-        let default_sctp = RtcSctp::new(DATAGRAM_MTU_TARGET);
+        let default_sctp = RtcSctp::new(DATAGRAM_MTU_TARGET, LOCAL_MAX_MESSAGE_SIZE);
         assert_eq!(
             default_sctp.max_payload_size(),
             DATAGRAM_MTU_TARGET - overhead
         );
 
-        let small_sctp = RtcSctp::new(900);
+        let small_sctp = RtcSctp::new(900, LOCAL_MAX_MESSAGE_SIZE);
         assert_eq!(small_sctp.max_payload_size(), 900 - overhead);
     }
 }

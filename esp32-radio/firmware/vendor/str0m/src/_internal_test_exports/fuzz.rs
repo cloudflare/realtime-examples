@@ -79,7 +79,7 @@ pub fn sdp_answer(data: &[u8]) -> Option<()> {
 pub fn depack(data: &[u8]) -> Option<()> {
     let mut rng = Rng::new(data);
 
-    let codec = match rng.u8(10)? {
+    let codec = match rng.u8(11)? {
         0 => Codec::Opus,
         1 => Codec::Vp8,
         2 => Codec::Vp9,
@@ -91,10 +91,17 @@ pub fn depack(data: &[u8]) -> Option<()> {
         8 => Codec::PCMA,
         9 => Codec::G722,
         10 => Codec::CN,
+        11 => Codec::AmrWb,
         _ => unreachable!(),
     };
 
-    let mut depack = DepacketizingBuffer::new(codec.into(), rng.usize(300)?);
+    let mut cd: CodecDepacketizer = codec.into();
+    // AMR-WB has two on-the-wire layouts (RFC 4867); fuzz both.
+    if let CodecDepacketizer::AmrWb(ref mut amr) = cd {
+        amr.octet_align = rng.bool()?;
+    }
+
+    let mut depack = DepacketizingBuffer::new(cd, rng.usize(300)?);
 
     let exts = random_extmap(&mut rng, 10)?;
 
@@ -117,7 +124,7 @@ pub fn depack(data: &[u8]) -> Option<()> {
             let data = rng.slice(len)?.to_vec();
             depack.push(meta, data);
         } else {
-            depack.pop();
+            depack.pop(start, None);
         }
     }
 }
@@ -136,7 +143,9 @@ pub fn receive_register(data: &[u8]) -> Option<()> {
                 rr.update(seq.into(), arrival, rtp_time, clock_rate);
             }
             1 => {
-                rr.nack_report();
+                let now = start + Duration::from_micros(rng.u64(u64::MAX / 100)?);
+                let rtt = Duration::from_millis(rng.u64(1000)?);
+                rr.nack_report(now, Some(rtt));
             }
             2 => {
                 rr.reception_report();
@@ -210,7 +219,7 @@ pub fn rtcp(data: &[u8]) -> Option<()> {
 pub fn depack_direct(data: &[u8]) -> Option<()> {
     let mut rng = Rng::new(data);
 
-    let codec = match rng.u8(10)? {
+    let codec = match rng.u8(12)? {
         0 => Codec::Opus,
         1 => Codec::Vp8,
         2 => Codec::Vp9,
@@ -222,10 +231,16 @@ pub fn depack_direct(data: &[u8]) -> Option<()> {
         8 => Codec::PCMA,
         9 => Codec::G722,
         10 => Codec::CN,
+        11 => Codec::Tele,
+        12 => Codec::AmrWb,
         _ => unreachable!(),
     };
 
     let mut depack: CodecDepacketizer = codec.into();
+    // AMR-WB has two on-the-wire layouts (RFC 4867); fuzz both.
+    if let CodecDepacketizer::AmrWb(ref mut amr) = depack {
+        amr.octet_align = rng.bool()?;
+    }
     let mut out = Vec::new();
     let mut extra = CodecExtra::None;
 

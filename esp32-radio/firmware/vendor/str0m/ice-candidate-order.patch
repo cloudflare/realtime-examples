@@ -1,0 +1,190 @@
+diff --git a/src/sdp/parser.rs b/src/sdp/parser.rs
+index 83c65dc..b7183ad 100644
+--- a/src/sdp/parser.rs
++++ b/src/sdp/parser.rs
+@@ -1,10 +1,6 @@
+-use std::net::{IpAddr, SocketAddr};
+-use std::str::FromStr;
+-
++use crate::Candidate;
+ use crate::crypto::Fingerprint;
+-use crate::io::TcpType;
+ use crate::rtp_::{Direction, Extension, Frequency, Mid, Pt, SessionId, Ssrc};
+-use crate::{Candidate, CandidateKind};
+ use combine::error::*;
+ use combine::parser::char::*;
+ use combine::parser::combinator::*;
+@@ -207,124 +203,21 @@ where
+     ))
+ }
+ 
+-/// Parser for candidate, without attribute prefix (a=).
+-fn candidate<Input>() -> impl Parser<Input, Output = Candidate>
++/// Parse the full candidate line with the same grammar as standalone ICE candidates.
++pub(crate) fn candidate_attribute<Input>() -> impl Parser<Input, Output = Candidate>
+ where
+     Input: Stream<Token = char>,
+     Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
+ {
+-    // Reference: https://datatracker.ietf.org/doc/html/rfc5245#section-15.1
+-    let port = || {
+-        not_sp::<Input>().and_then(|s| {
+-            s.parse::<u16>()
+-                .map_err(StreamErrorFor::<Input>::message_format)
+-        })
+-    };
+-
+-    let ip_addr = || {
+-        not_sp().and_then(|s| {
+-            s.parse::<IpAddr>()
+-                .map_err(StreamErrorFor::<Input>::message_format)
+-        })
+-    };
+-
+-    let kind = choice((
+-        string("host").map(|_| CandidateKind::Host),
+-        string("prflx").map(|_| CandidateKind::PeerReflexive),
+-        string("srflx").map(|_| CandidateKind::ServerReflexive),
+-        string("relay").map(|_| CandidateKind::Relayed),
+-    ));
+-
+-    (
+-        string("candidate:").and_then(|s| {
+-            s.parse::<String>()
+-                .map_err(StreamErrorFor::<Input>::message_format)
+-        }),
+-        not_sp(),
+-        token(' '),
+-        not_sp().and_then(|s| {
+-            s.parse::<u16>()
+-                .map_err(StreamErrorFor::<Input>::message_format)
+-        }),
+-        token(' '),
+-        not_sp().and_then(|s| {
+-            s.as_str().try_into().map_err(|_| {
+-                StreamErrorFor::<Input>::message_format(format!("invalid protocol: {}", s))
++    let candidate = look_ahead(string("candidate:")).with(any_value());
++    typed_line(
++        'a',
++        candidate.and_then(|line| {
++            Candidate::from_sdp_string(&line).map_err(|_| {
++                StreamErrorFor::<Input>::message_static_message("invalid ICE candidate")
+             })
+         }),
+-        token(' '),
+-        not_sp().and_then(|s| {
+-            s.parse::<u32>()
+-                .map_err(StreamErrorFor::<Input>::message_format)
+-        }),
+-        token(' '),
+-        ip_addr(),
+-        token(' '),
+-        port(),
+-        string(" typ "),
+-        kind,
+-        optional((
+-            attempt(string(" raddr ")),
+-            ip_addr(),
+-            string(" rport "),
+-            port(),
+-        )),
+-        optional((
+-            attempt(string(" tcptype ")),
+-            not_sp().and_then(|s| {
+-                TcpType::from_str(s.as_str()).map_err(StreamErrorFor::<Input>::message_format)
+-            }),
+-        )),
+-        optional((attempt(string(" generation ")), not_sp())),
+-        optional((attempt(string(" network-id ")), not_sp())),
+-        optional((attempt(string(" ufrag ")), not_sp())),
+-        optional((attempt(string(" network-cost ")), not_sp())),
+     )
+-        .map(
+-            |(
+-                _,
+-                found,
+-                _,
+-                comp_id,
+-                _,
+-                proto,
+-                _,
+-                prio,
+-                _,
+-                addr,
+-                _,
+-                port,
+-                _,
+-                kind,
+-                raddr,   // (" raddr ", addr, " rport ", port)
+-                tcptype, // (" tcptype ", tcptype)
+-                _,       // (" generation ", generation)
+-                _,       // (" network-id ", network_id)
+-                ufrag,   // (" ufrag ", ufrag)
+-                _,       // ("network-cost", network_cost)
+-            )| {
+-                Candidate::from_parts(
+-                    found,
+-                    comp_id,
+-                    proto,
+-                    prio, // remote candidates calculate prio on their side
+-                    SocketAddr::from((addr, port)),
+-                    kind,
+-                    raddr.map(|(_, addr, _, port)| SocketAddr::from((addr, port))),
+-                    tcptype.map(|(_, tcptype)| tcptype),
+-                    ufrag.map(|(_, u)| u),
+-                )
+-            },
+-        )
+-}
+-
+-/// Parser for a=candidate lines.
+-pub(crate) fn candidate_attribute<Input>() -> impl Parser<Input, Output = Candidate>
+-where
+-    Input: Stream<Token = char>,
+-    Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
+-{
+-    (string("a="), candidate(), line_end()).map(|(_, c, _)| c)
+ }
+ 
+ /// Session line with a key we ignore (spec says we should validate them, but meh).
+@@ -938,7 +831,7 @@ fn is_param_char(c: char, delimiter: char) -> bool {
+ mod test {
+     use super::*;
+     use crate::format::Codec;
+-    use crate::io::Protocol;
++    use crate::io::{Protocol, TcpType};
+ 
+     #[test]
+     fn spaces_preserve_or_consume_line_endings() {
+@@ -1554,6 +1447,31 @@ mod test {
+         );
+     }
+ 
++    #[test]
++    fn answer_retains_candidates_in_either_extension_order() {
++        for extensions in ["ufrag radio generation 0", "generation 0 ufrag radio"] {
++            let sdp = format!(
++                "v=0\r\n\
++                 o=- 1 1 IN IP4 192.0.2.1\r\n\
++                 s=-\r\n\
++                 t=0 0\r\n\
++                 m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n\
++                 a=mid:0\r\n\
++                 a=recvonly\r\n\
++                 a=rtpmap:111 opus/48000/2\r\n\
++                 a=candidate:1 1 udp 100 192.0.2.1 5000 typ host {extensions}\r\n\
++                 a=candidate:1 2 udp 99 192.0.2.1 5001 typ host {extensions}\r\n\
++                 a=end-of-candidates\r\n"
++            );
++            let answer = crate::change::SdpAnswer::from_sdp_string(&sdp).unwrap();
++            let candidates: Vec<_> = answer.media_lines[0]
++                .ice_candidates()
++                .map(|candidate| (candidate.addr().port(), candidate.ufrag()))
++                .collect();
++            assert_eq!(candidates, [(5000, Some("radio")), (5001, Some("radio"))]);
++        }
++    }
++
+     #[test]
+     fn parse_candidates() {
+         let a = "a=candidate:1 1 udp 1845494015 198.51.100.100 11100 typ srflx raddr \

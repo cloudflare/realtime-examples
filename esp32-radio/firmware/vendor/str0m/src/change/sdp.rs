@@ -12,6 +12,7 @@ use crate::format::CodecConfig;
 use crate::format::PayloadParams;
 use crate::media::{Media, Rids, Simulcast};
 use crate::packet::MediaKind;
+use crate::poll::RtcMut;
 use crate::rtp_::MidRid;
 use crate::rtp_::Rid;
 use crate::rtp_::{Direction, Extension, ExtensionMap, Mid, Pt, Ssrc};
@@ -27,16 +28,31 @@ pub use crate::sdp::{SdpAnswer, SdpOffer};
 use crate::streams::{DEFAULT_RTX_CACHE_DURATION, DEFAULT_RTX_RATIO_CAP, Streams};
 
 /// Changes to the Rtc via SDP Offer/Answer dance.
+///
+/// Only one local offer/answer exchange can be pending at a time. Applications must track
+/// queued changes outside str0m and wait for the current exchange to finish before creating
+/// another offer. If an incoming offer interrupts the exchange, recreate the desired local
+/// changes against the updated session after answering that offer.
 pub struct SdpApi<'a> {
-    rtc: &'a mut Rtc,
+    // `RtcMut` arms the readiness on mutable deref only; see [`crate::poll`].
+    rtc: RtcMut<'a>,
     changes: Changes,
 }
 
 impl<'a> SdpApi<'a> {
     pub(crate) fn new(rtc: &'a mut Rtc) -> Self {
         SdpApi {
-            rtc,
+            rtc: RtcMut::new(rtc),
             changes: Changes::default(),
+        }
+    }
+
+    fn new_mid(&self) -> Mid {
+        loop {
+            let mid = self.rtc.new_mid();
+            if !self.changes.has_mid(mid) {
+                break mid;
+            }
         }
     }
 
@@ -45,7 +61,9 @@ impl<'a> SdpApi<'a> {
     /// sent to the remote peer.
     ///
     /// <b>Note. Pending changes from a previous non-completed [`SdpApi`][super::SdpApi] will be
-    /// considered rolled back when calling this function.</b>
+    /// considered rolled back when calling this function.</b> Any outstanding [`SdpPendingOffer`]
+    /// is invalidated, even if this call returns an error. The application must track and
+    /// recreate any local changes it still wants to negotiate.
     ///
     /// The incoming SDP is validated in various ways which can cause this call to fail.
     /// Example of such problems would be an SDP without any m-lines, missing `a=fingerprint`
@@ -65,7 +83,7 @@ impl<'a> SdpApi<'a> {
     /// // send json_answer to remote peer.
     /// let json_answer = serde_json::to_vec(&answer).unwrap();
     /// ```
-    pub fn accept_offer(self, offer: SdpOffer) -> Result<SdpAnswer, RtcError> {
+    pub fn accept_offer(mut self, offer: SdpOffer) -> Result<SdpAnswer, RtcError> {
         debug!("Accept offer");
 
         // Invalidate any outstanding PendingOffer.
@@ -81,7 +99,7 @@ impl<'a> SdpApi<'a> {
             ));
         }
 
-        add_ice_details(self.rtc, &offer, None)?;
+        add_ice_details(&mut self.rtc, &offer, None)?;
 
         if self.rtc.remote_fingerprint.is_none() {
             if let Some(f) = offer.fingerprint() {
@@ -99,7 +117,7 @@ impl<'a> SdpApi<'a> {
         }
 
         // Ensure setup=active/passive is corresponding remote and init dtls.
-        init_dtls(self.rtc, &offer)?;
+        init_dtls(&mut self.rtc, &offer)?;
 
         let remote_max_message_size = extract_max_message_size(offer.media_lines.iter());
 
@@ -126,7 +144,7 @@ impl<'a> SdpApi<'a> {
                 .try_init_sctp(client, init_data, remote_max_message_size)?;
         }
 
-        let params = AsSdpParams::new(self.rtc, None);
+        let params = AsSdpParams::new(&self.rtc, None);
         let sdp = as_sdp(&self.rtc.session, params);
 
         debug!("Create answer");
@@ -156,7 +174,7 @@ impl<'a> SdpApi<'a> {
     /// rtc.sdp_api().accept_answer(pending, answer).unwrap();
     /// ```
     pub fn accept_answer(
-        self,
+        mut self,
         mut pending: SdpPendingOffer,
         answer: SdpAnswer,
     ) -> Result<(), RtcError> {
@@ -175,10 +193,10 @@ impl<'a> SdpApi<'a> {
             ));
         }
 
-        add_ice_details(self.rtc, &answer, Some(&pending))?;
+        add_ice_details(&mut self.rtc, &answer, Some(&pending))?;
 
         // Ensure setup=active/passive is corresponding remote and init dtls.
-        init_dtls(self.rtc, &answer)?;
+        init_dtls(&mut self.rtc, &answer)?;
 
         if self.rtc.remote_fingerprint.is_none() {
             if let Some(f) = answer.fingerprint() {
@@ -279,7 +297,7 @@ impl<'a> SdpApi<'a> {
         track_id: Option<String>,
         simulcast: Option<crate::media::Simulcast>,
     ) -> Mid {
-        let mid = self.rtc.new_mid();
+        let mid = self.new_mid();
 
         // https://www.rfc-editor.org/rfc/rfc8830
         // msid-id = 1*64token-char
@@ -443,7 +461,7 @@ impl<'a> SdpApi<'a> {
         let changes_contains_add_app = self.changes.contains_add_app();
 
         if !has_media && !changes_contains_add_app {
-            let mid = self.rtc.new_mid();
+            let mid = self.new_mid();
             self.changes.0.push(Change::AddApp(mid));
         }
 
@@ -499,7 +517,7 @@ impl<'a> SdpApi<'a> {
     /// assert!(changes.apply().is_none());
     /// # }
     /// ```
-    pub fn apply(self) -> Option<(SdpOffer, SdpPendingOffer)> {
+    pub fn apply(mut self) -> Option<(SdpOffer, SdpPendingOffer)> {
         if self.changes.is_empty() {
             return None;
         }
@@ -509,7 +527,7 @@ impl<'a> SdpApi<'a> {
         let requires_negotiation = self.changes.0.iter().any(requires_negotiation);
 
         if requires_negotiation {
-            let offer = create_offer(self.rtc, &self.changes);
+            let offer = create_offer(&mut self.rtc, &self.changes);
             let pending = SdpPendingOffer {
                 change_id,
                 changes: self.changes,
@@ -518,53 +536,22 @@ impl<'a> SdpApi<'a> {
             Some((offer, pending))
         } else {
             debug!("Apply direct changes");
-            apply_direct_changes(self.rtc, self.changes);
+            apply_direct_changes(&mut self.rtc, self.changes);
             None
         }
-    }
-
-    /// Combines the modifications made in [`SdpApi`] with those in [`SdpPendingOffer`].
-    ///
-    /// This function merges the changes present in [`SdpApi`] with the changes
-    /// in [`SdpPendingOffer`]. In result this [`SdpApi`] will incorporate modifications
-    /// from both the previous [`SdpPendingOffer`] and any newly added changes.
-    ///
-    /// ## Example
-    ///
-    /// ```no_run
-    /// # use std::time::Instant;
-    /// # use str0m::media::{Direction, MediaKind};
-    /// # use str0m::Rtc;
-    /// let mut rtc = Rtc::new(Instant::now());
-    /// let mut changes = rtc.sdp_api();
-    /// changes.add_media(MediaKind::Audio, Direction::SendOnly, None, None, None);
-    /// let (_offer, pending) = changes.apply().unwrap();
-    ///
-    /// let mut changes = rtc.sdp_api();
-    /// changes.add_media(MediaKind::Video, Direction::SendOnly, None, None, None);
-    /// changes.merge(pending);
-    ///
-    /// // This `SdpOffer` will have changes from the first `SdpPendingChanges`
-    /// // and new changes from `SdpApi`
-    /// let (_offer, pending) = changes.apply().unwrap();
-    /// ```
-    pub fn merge(&mut self, mut pending_offer: SdpPendingOffer) {
-        pending_offer.retain_relevant(self.rtc);
-
-        // Prepend the original pending changes before the current SdpApi's own changes.
-        //
-        // AddMedia / AddApp entries from the pending offer carry already-allocated MIDs
-        // that the remote peer may have committed to specific m-line positions. They must
-        // appear before any new changes so that as_new_medias() assigns them the same
-        // indices as in the original offer.
-        pending_offer.changes.0.append(&mut self.changes.0);
-        self.changes.0 = pending_offer.changes.0;
     }
 }
 
 /// Pending offer from a previous [`Rtc::sdp_api()`] call.
 ///
-/// This allows us to accept a remote answer. No changes have been made to the session
+/// Represents one local negotiation change set, which can contain multiple media or channel
+/// changes, and allows accepting its remote answer. It is not a queue of pending negotiations.
+/// Creating another offer with [`SdpApi::apply()`] invalidates it, as does calling
+/// [`SdpApi::accept_offer()`]. Invalidated changes cannot be reapplied through this token.
+/// Applications must track queued changes outside str0m and recreate any desired changes
+/// after an interrupted negotiation against the current session state.
+///
+/// No changes have been made to the session
 /// before we call [`SdpApi::accept_answer()`], which means that rolling back a
 /// change is as simple as dropping this instance.
 ///
@@ -587,29 +574,6 @@ impl<'a> SdpApi<'a> {
 pub struct SdpPendingOffer {
     change_id: usize,
     changes: Changes,
-}
-
-impl SdpPendingOffer {
-    /// Retains only the relevant changes in the `changes` vector based on the provided `Rtc` instance.
-    ///
-    /// This function filters the vector of `Change` instances stored in the current object and retains
-    /// only those changes that are considered relevant with respect to the provided `Rtc` instance.
-    fn retain_relevant(&mut self, rtc: &Rtc) {
-        fn is_relevant(rtc: &Rtc, c: &Change) -> bool {
-            match c {
-                Change::AddMedia(v) => rtc.media(v.mid).is_none(),
-                Change::AddApp(_) => rtc.session.app().is_none(),
-                Change::AddChannel(v) => rtc.chan.stream_id_by_channel_id(v.0).is_none(),
-                Change::Direction(m, d) => {
-                    // If mid is missing, this is not relevant.
-                    rtc.media(*m).map(|m| m.direction() != *d).unwrap_or(false)
-                }
-                Change::IceRestart(v, _) => rtc.ice.local_credentials() != v,
-            }
-        }
-
-        self.changes.retain(|c| is_relevant(rtc, c));
-    }
 }
 
 #[derive(Default)]
@@ -872,7 +836,7 @@ fn as_sdp(session: &Session, params: AsSdpParams) -> Sdp {
 
                 let params: Vec<_> = session
                     .codec_config
-                    .all_for_kind(m.kind())
+                    .all_for_kind(m.kind(), false)
                     .cloned()
                     .collect();
 
@@ -880,21 +844,13 @@ fn as_sdp(session: &Session, params: AsSdpParams) -> Sdp {
             })
             .collect::<Vec<_>>();
 
-        // Use the same local limit for SDP and the SCTP reassembly policy.
         for line in &mut lines {
             if line.typ.is_channel() {
-                line.attrs
-                    .retain(|a| !matches!(a, MediaAttribute::MaxMessageSize(_)));
                 line.attrs.push(MediaAttribute::MaxMessageSize(
                     params.local_max_message_size as usize,
                 ));
-            }
-        }
-
-        // Add a=sctp-init to the application m-line if SNAP is configured.
-        if let Some(sctp_init) = &params.local_sctp_init {
-            for line in &mut lines {
-                if line.typ.is_channel() {
+                // Add a=sctp-init to the application m-line if SNAP is configured.
+                if let Some(sctp_init) = &params.local_sctp_init {
                     line.attrs
                         .push(sdp::MediaAttribute::SctpInit(sctp_init.clone()));
                 }
@@ -1367,14 +1323,9 @@ fn update_media(
     }
     media.set_remote_extmap(remote_extmap);
 
-    // SSRC changes
-    // This will always be for ReceiverSource since any incoming a=ssrc line will be
-    // about the remote side's SSRC.
-    if !new_dir.is_receiving() {
-        return;
-    }
-
-    // Simulcast configuration
+    // Simulcast configuration. This applies to both directions: every later SDP for the
+    // m-line is generated from the Media, and must repeat the negotiated a=rid and
+    // a=simulcast lines (RFC 8829 5.2.2, RFC 8853 5.3.4).
     if let Some(s) = m.simulcast() {
         if s.is_munged {
             warn!("Not supporting simulcast via munging SDP");
@@ -1382,6 +1333,13 @@ fn update_media(
             // Invert before setting, since it has a recv and send config.
             media.set_simulcast(s.invert());
         }
+    }
+
+    // SSRC changes
+    // This will always be for ReceiverSource since any incoming a=ssrc line will be
+    // about the remote side's SSRC.
+    if !new_dir.is_receiving() {
+        return;
     }
 
     // Only use pre-communicated SSRC if we are running without simulcast.
@@ -1463,9 +1421,6 @@ impl AsSdpMediaLine for (Mid, usize) {
     ) -> MediaLine {
         attrs.push(MediaAttribute::Mid(self.0));
         attrs.push(MediaAttribute::SctpPort(5000));
-        attrs.push(MediaAttribute::MaxMessageSize(
-            crate::sctp::LOCAL_MAX_MESSAGE_SIZE as usize,
-        ));
 
         MediaLine {
             typ: sdp::MediaType::Application,
@@ -1483,7 +1438,7 @@ impl AsSdpMediaLine for Media {
         Media::mid(self)
     }
     fn msid(&self) -> Option<&Msid> {
-        Some(Media::msid(self))
+        (!self.disabled()).then(|| Media::msid(self))
     }
     fn index(&self) -> usize {
         Media::index(self)
@@ -1514,7 +1469,9 @@ impl AsSdpMediaLine for Media {
         }
 
         attrs.push(self.direction().into());
-        attrs.push(MediaAttribute::Msid(self.msid().clone()));
+        if !self.disabled() {
+            attrs.push(MediaAttribute::Msid(self.msid().clone()));
+        }
         attrs.push(MediaAttribute::RtcpMux);
 
         // The effective params start from the Session::codec_config to retain the
@@ -1525,9 +1482,15 @@ impl AsSdpMediaLine for Media {
         let mut pts = vec![];
 
         for p in effective_params {
+            let p = *p;
             p.as_media_attrs(&mut attrs);
 
-            // The pts that will be advertised in the SDP
+            // The pts that will be advertised in the SDP. A negotiated RED goes before its
+            // primary: libwebrtc enables RED only when it precedes the selected audio codec.
+            // RED is kept only when both sides offer it (`PayloadParams::update_param`).
+            if let Some(red) = p.red() {
+                pts.push(red);
+            }
             pts.push(p.pt());
             if let Some(rtx) = p.resend() {
                 pts.push(rtx);
@@ -1552,6 +1515,7 @@ impl AsSdpMediaLine for Media {
         }
 
         // Outgoing SSRCs
+        let ssrcs_tx: &[(Ssrc, Option<Ssrc>)] = if self.disabled() { &[] } else { ssrcs_tx };
         let msid = format!("{} {}", self.msid().stream_id, self.msid().track_id);
         for (ssrc, ssrc_rtx) in ssrcs_tx {
             attrs.push(MediaAttribute::Ssrc {
@@ -1697,6 +1661,14 @@ impl fmt::Debug for SdpPendingOffer {
 }
 
 impl Changes {
+    fn has_mid(&self, mid: Mid) -> bool {
+        self.0.iter().any(|c| match c {
+            Change::AddMedia(v) => v.mid == mid,
+            Change::AddApp(v) => *v == mid,
+            Change::AddChannel(_) | Change::Direction(_, _) | Change::IceRestart(_, _) => false,
+        })
+    }
+
     pub fn contains_add_app(&self) -> bool {
         for i in 0..self.0.len() {
             if matches!(&self.0[i], Change::AddApp(_)) {
@@ -1840,7 +1812,7 @@ impl Change {
             AddMedia(v) => {
                 // TODO can we avoid all this cloning?
                 let mut add = v.clone();
-                add.pts = config.all_for_kind(v.kind).map(|p| p.pt()).collect();
+                add.pts = config.all_for_kind(v.kind, true).map(|p| p.pt()).collect();
                 add.exts = exts.cloned_with_type(v.kind.is_audio());
                 add.index = index;
 
@@ -1981,28 +1953,6 @@ mod test {
         assert!(matches!(r, Err(RtcError::ChangesOutOfOrder)));
     }
 
-    #[test]
-    fn sdp_api_merge_works() {
-        crate::init_crypto_default();
-
-        let mut rtc = Rtc::new(Instant::now());
-        let mut changes = rtc.sdp_api();
-        changes.add_media(MediaKind::Audio, Direction::SendOnly, None, None, None);
-        let (offer, pending) = changes.apply().unwrap();
-
-        let mut changes = rtc.sdp_api();
-        changes.add_media(MediaKind::Video, Direction::SendOnly, None, None, None);
-        changes.merge(pending);
-        let (new_offer, _) = changes.apply().unwrap();
-
-        // After merge(), the original AddMedia (audio) is prepended before the new AddMedia
-        // (video) to preserve its original m-line position.  So audio is at index 0 and video at 1.
-        assert_eq!(offer.media_lines[0], new_offer.media_lines[0]);
-        assert_eq!(new_offer.media_lines[0].typ, MediaType::Audio);
-        assert_eq!(new_offer.media_lines[1].typ, MediaType::Video);
-        assert_eq!(new_offer.media_lines.len(), 2);
-    }
-
     // The indices assigned to Media objects by as_new_medias() must be contiguous starting
     // from index_start.  Only entries that produce m-lines (AddMedia / AddApp) should
     // consume an index slot – non-media entries (AddChannel, Direction, IceRestart) must
@@ -2076,131 +2026,83 @@ mod test {
         );
     }
 
-    // AddMedia/AddApp entries from a pending offer carry already-allocated MIDs whose
-    // m-line positions the remote peer may have committed to.  When merging a pending offer
-    // into a new SdpApi, those original entries must be prepended so they keep their
-    // original lower-index positions rather than being displaced by new changes.
     #[test]
-    fn sdp_api_merge_stale_media_keeps_original_position() {
+    fn twcc_negotiation_uses_first_media_section_for_each_pt() {
         crate::init_crypto_default();
+        for enabled_audio in [1, 2] {
+            let expected_audio = enabled_audio == 1;
+            let now = Instant::now();
+            let mut local = Rtc::builder().build(now);
+            let mut remote = Rtc::builder().build(now);
+            let mut change = local.sdp_api();
+            change.add_media(MediaKind::Audio, Direction::SendOnly, None, None, None);
+            change.add_media(MediaKind::Audio, Direction::SendOnly, None, None, None);
+            change.add_media(MediaKind::Video, Direction::SendOnly, None, None, None);
+            let (offer, pending) = change.apply().unwrap();
+            let mut section = 0;
+            let sdp = offer
+                .to_sdp_string()
+                .lines()
+                .filter(|line| {
+                    if line.starts_with("m=") {
+                        section += 1;
+                    }
+                    section == enabled_audio || !line.contains("transport-cc")
+                })
+                .collect::<Vec<_>>()
+                .join("\r\n")
+                + "\r\n";
+            let offer = SdpOffer::from_sdp_string(&sdp).unwrap();
+            let answer = remote.sdp_api().accept_offer(offer).unwrap();
+            // Both audio sections use the first section's negotiated result.
+            for m in &answer.media_lines[..2] {
+                assert!(
+                    m.rtp_params()
+                        .iter()
+                        .all(|p| p.fb_transport_cc() == expected_audio)
+                );
+            }
+            assert!(
+                answer.media_lines[2]
+                    .rtp_params()
+                    .iter()
+                    .all(|p| !p.fb_transport_cc())
+            );
+            local.sdp_api().accept_answer(pending, answer).unwrap();
+            for rtc in [&local, &remote] {
+                assert!(
+                    rtc.codec_config()
+                        .params()
+                        .iter()
+                        .filter(|p| p.spec().codec.is_audio())
+                        .all(|p| p.fb_transport_cc() == expected_audio)
+                );
+                assert!(
+                    rtc.codec_config()
+                        .params()
+                        .iter()
+                        .filter(|p| p.spec().codec.is_video())
+                        .all(|p| !p.fb_transport_cc())
+                );
+            }
 
-        let mut rtc = Rtc::new(Instant::now());
-
-        // First offer: add audio.  Audio will be at index 0.
-        let mut changes = rtc.sdp_api();
-        let _mid_audio = changes.add_media(MediaKind::Audio, Direction::SendOnly, None, None, None);
-        let (offer1, pending) = changes.apply().unwrap();
-
-        // The original offer has audio at position 0.
-        assert_eq!(offer1.media_lines[0].typ, MediaType::Audio);
-
-        // Simulate glare: a new SdpApi adds video, then merges the pending offer
-        // containing the original audio AddMedia.
-        let mut changes = rtc.sdp_api();
-        changes.add_media(MediaKind::Video, Direction::SendOnly, None, None, None);
-        changes.merge(pending);
-        let (offer2, _) = changes.apply().unwrap();
-
-        // The original audio must be prepended before the new video, keeping it at
-        // position 0 — the same position as in the original offer.
-        assert_eq!(
-            offer2.media_lines[0].typ,
-            MediaType::Audio,
-            "Original audio from pending should be at position 0 (same as original offer)"
-        );
-        assert_eq!(
-            offer2.media_lines[1].typ,
-            MediaType::Video,
-            "New video added to current SdpApi should be at position 1"
-        );
-        assert_eq!(
-            offer1.media_lines[0], offer2.media_lines[0],
-            "Audio m-line must be identical between original and merged offers"
-        );
-    }
-
-    // When a new SdpApi has its own AddMedia changes and also merges a pending offer that
-    // has AddMedia changes, the original pending entries must come before the new ones so
-    // their m-line positions are stable:
-    //   1. First offer: [AddMedia(audio), AddMedia(video)] → audio at 0, video at 1
-    //   2. Glare – pending is saved
-    //   3. New SdpApi: [AddMedia(screen)]
-    //   4. After merge: [AddMedia(audio), AddMedia(video), AddMedia(screen)]
-    //      → audio at 0, video at 1, screen at 2  (CORRECT)
-    #[test]
-    fn sdp_api_merge_with_direction_and_new_media_preserves_positions() {
-        crate::init_crypto_default();
-
-        let now = Instant::now();
-        let mut rtc1 = Rtc::new(now);
-        let mut rtc2 = Rtc::new(now);
-
-        // Establish one audio m-line so we can change its direction later.
-        let mut changes = rtc1.sdp_api();
-        let mid_audio = changes.add_media(MediaKind::Audio, Direction::SendOnly, None, None, None);
-        let (offer0, pending0) = changes.apply().unwrap();
-        let answer0 = rtc2.sdp_api().accept_offer(offer0).unwrap();
-        rtc1.sdp_api().accept_answer(pending0, answer0).unwrap();
-        // Session now: audio at index 0.
-
-        // Create an offer with two new medias: video1 and video2.
-        // video1 → session position 1, video2 → session position 2.
-        let mut changes = rtc1.sdp_api();
-        let mid_v1 = changes.add_media(MediaKind::Video, Direction::SendOnly, None, None, None);
-        let mid_v2 = changes.add_media(MediaKind::Video, Direction::SendOnly, None, None, None);
-        let (offer1, pending1) = changes.apply().unwrap();
-
-        assert_eq!(offer1.media_lines[1].mid(), mid_v1, "video1 at idx 1");
-        assert_eq!(offer1.media_lines[2].mid(), mid_v2, "video2 at idx 2");
-
-        // Glare: create a new SdpApi that:
-        //   (a) changes direction of existing audio m-line (non-media Change)
-        //   (b) adds a new screen-share video m-line
-        // Then merge the original pending1 into it.
-        let mut changes = rtc1.sdp_api();
-        changes.set_direction(mid_audio, Direction::Inactive);
-        let mid_screen = changes.add_media(MediaKind::Video, Direction::SendOnly, None, None, None);
-        changes.merge(pending1);
-        let (offer2, _) = changes.apply().unwrap();
-
-        // Session already has audio at index 0.
-        // The merged offer must have:
-        //   position 0: audio (existing, unchanged)
-        //   position 1: video1 (from pending — same position as offer1)
-        //   position 2: video2 (from pending — same position as offer1)
-        //   position 3: screen (newly added in the new SdpApi)
-        assert_eq!(
-            offer2.media_lines.len(),
-            4,
-            "Merged offer should have 4 m-lines: audio + video1 + video2 + screen"
-        );
-
-        // Original video m-lines from the pending offer must keep their positions (1 and 2).
-        assert_eq!(
-            offer2.media_lines[1].mid(),
-            mid_v1,
-            "video1 from pending should remain at position 1"
-        );
-        assert_eq!(
-            offer1.media_lines[1], offer2.media_lines[1],
-            "video1 m-line should be identical in both offers"
-        );
-        assert_eq!(
-            offer2.media_lines[2].mid(),
-            mid_v2,
-            "video2 from pending should remain at position 2"
-        );
-        assert_eq!(
-            offer1.media_lines[2], offer2.media_lines[2],
-            "video2 m-line should be identical in both offers"
-        );
-
-        // New screen share is at position 3, after the original pending m-lines.
-        assert_eq!(
-            offer2.media_lines[3].mid(),
-            mid_screen,
-            "New screen-share should be at position 3"
-        );
+            // Existing m-lines retain their negotiated codec parameters.
+            let sdp = sdp
+                .lines()
+                .filter(|line| !line.contains("transport-cc"))
+                .collect::<Vec<_>>()
+                .join("\r\n")
+                + "\r\n";
+            let offer = SdpOffer::from_sdp_string(&sdp).unwrap();
+            let answer = remote.sdp_api().accept_offer(offer).unwrap();
+            for m in &answer.media_lines[..2] {
+                assert!(
+                    m.rtp_params()
+                        .iter()
+                        .all(|p| p.fb_transport_cc() == expected_audio)
+                );
+            }
+        }
     }
 
     #[test]
@@ -2560,8 +2462,13 @@ mod test {
     fn test_configured_max_message_size_advertised() {
         crate::init_crypto_default();
         let limits = crate::channel::SctpReceiveLimits::new(8192, 32768, 64, 8);
-        let mut rtc = Rtc::builder()
-            .set_sctp_receive_limits(limits)
+        let config = Rtc::builder().set_sctp_receive_limits(limits);
+        for (requested, expected) in [(0, 8192), (2048, 2048)] {
+            let bounded = config.clone().set_sctp_max_message_size(requested);
+            assert_eq!(bounded.sctp_max_message_size(), expected);
+        }
+        let mut rtc = config
+            .set_sctp_max_message_size(16384)
             .build(Instant::now());
         let mut change = rtc.sdp_api();
         change.add_channel("control".into());
@@ -2619,26 +2526,24 @@ mod test {
         crate::init_crypto_default();
 
         let now = Instant::now();
-        let mut rtc1 = Rtc::new(now);
-        let mut rtc2 = Rtc::new(now);
+        let custom_max_size1 = 98304u32;
+        let custom_max_size2 = 131072u32;
+        let mut rtc1 = Rtc::builder()
+            .set_sctp_max_message_size(custom_max_size1)
+            .build(now);
+        let mut rtc2 = Rtc::builder()
+            .set_sctp_max_message_size(custom_max_size2)
+            .build(now);
 
         // Create an offer from rtc1 with a channel
         let mut change1 = rtc1.sdp_api();
         change1.add_channel("test-channel".into());
         let (offer1, pending1) = change1.apply().unwrap();
 
-        // Get the offer SDP string and modify it to have a custom max-message-size
-        let custom_max_size1 = 98304u32;
-        let sdp_string = offer1.to_sdp_string();
-        let modified_sdp = sdp_string.replace(
-            &format!("a=max-message-size:{}", crate::sctp::LOCAL_MAX_MESSAGE_SIZE),
-            &format!("a=max-message-size:{}", custom_max_size1),
-        );
-
-        let modified_offer =
-            SdpOffer::from_sdp_string(&modified_sdp).expect("modified SDP should parse");
-
-        let answer = rtc2.sdp_api().accept_offer(modified_offer).unwrap();
+        let offer_sdp = offer1.to_sdp_string();
+        assert!(offer_sdp.contains(&format!("a=max-message-size:{custom_max_size1}\r\n")));
+        let offer = SdpOffer::from_sdp_string(&offer_sdp).unwrap();
+        let answer = rtc2.sdp_api().accept_offer(offer).unwrap();
 
         // Verify that rtc2's SCTP send limit is set to the custom value from rtc1's offer
         assert_eq!(
@@ -2648,25 +2553,41 @@ mod test {
         );
 
         // Now verify the reverse: rtc1 accepts rtc2's answer and applies its max-message-size
-        let custom_max_size2 = 131072u32;
-        let sdp_string = answer.to_sdp_string();
-        let modified_sdp = sdp_string.replace(
-            &format!("a=max-message-size:{}", crate::sctp::LOCAL_MAX_MESSAGE_SIZE),
-            &format!("a=max-message-size:{}", custom_max_size2),
-        );
+        let answer_sdp = answer.to_sdp_string();
+        assert!(answer_sdp.contains(&format!("a=max-message-size:{custom_max_size2}\r\n")));
+        let answer = SdpAnswer::from_sdp_string(&answer_sdp).unwrap();
 
-        let modified_answer =
-            SdpAnswer::from_sdp_string(&modified_sdp).expect("modified SDP should parse");
-
-        rtc1.sdp_api()
-            .accept_answer(pending1, modified_answer)
-            .unwrap();
+        rtc1.sdp_api().accept_answer(pending1, answer).unwrap();
 
         assert_eq!(
             rtc1.sctp.remote_max_message_size(),
             custom_max_size2,
             "rtc1 should have remote max message size set to rtc2's advertised value"
         );
+
+        let mut change = rtc1.sdp_api();
+        change.add_media(MediaKind::Audio, Direction::SendRecv, None, None, None);
+        let (offer, pending) = change.apply().unwrap();
+        assert_eq!(
+            offer
+                .media_lines
+                .iter()
+                .find(|m| m.typ.is_channel())
+                .unwrap()
+                .max_message_size(),
+            Some(custom_max_size1 as usize)
+        );
+        let answer = rtc2.sdp_api().accept_offer(offer).unwrap();
+        assert_eq!(
+            answer
+                .media_lines
+                .iter()
+                .find(|m| m.typ.is_channel())
+                .unwrap()
+                .max_message_size(),
+            Some(custom_max_size2 as usize)
+        );
+        rtc1.sdp_api().accept_answer(pending, answer).unwrap();
     }
 
     #[test]

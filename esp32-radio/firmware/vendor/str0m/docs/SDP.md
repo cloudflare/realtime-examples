@@ -4,6 +4,71 @@
 
 str0m does not follow the exact specification for SDP negotiation, however, almost no one does.
 
+## Our view of SDP
+
+We disagree with using SDP offer/answer as the application protocol for deciding
+what media should flow. SDP carries the complexity of its telephony origins into
+WebRTC, including negotiation rules and state transitions that applications
+already have the information to decide for themselves. Implementing every
+possible negotiation is not a goal of str0m.
+
+We think the useful negotiation is to narrow codecs and fmtp parameters to an
+agreed set for the session. str0m uses a single BUNDLE/session codec configuration,
+with the limitations described below. We do not model every distinction SDP can
+express between directions or individual m-lines.
+
+Media intent belongs to the application: which sources exist, who should send or
+receive them, and when they should start or stop. Applications already need a
+signaling channel to exchange offers and answers. They can use that channel to
+agree on this intent instead of relying on SDP direction changes to discover it.[^plan-b]
+
+Browsers and libWebRTC handle the full negotiation machinery and its edge cases
+better. str0m provides a deliberately limited SDP adapter to configure its
+session and interoperate with those peers. The details and departures documented
+here are part of that boundary, rather than a roadmap to implementing every SDP
+negotiation possibility.
+
+### Expressing application intent
+
+Establish media intent through application signaling, or narrow the incoming
+offer before passing it to str0m. For example, narrowing offered audio from
+`sendrecv` to `recvonly` makes str0m answer `sendonly`. Send that answer unchanged
+so str0m and the peer agree on the session. Any transformation must remain
+compatible with the original offer and the constraints documented below.
+
+SDP transformations belong in a separate crate. We do not intend to expose
+str0m's internal SDP parser or provide general per-m-line answer customization:
+codec parameters and other negotiated properties are shared across the session.
+
+## MSID identity in offers and answers
+
+When a remote offer first creates an m-line, str0m normally copies its
+`a=msid` stream and track IDs into `Media`. These are exposed by
+`Media::stream_id()` and `Media::track_id()` and used in str0m's own offers and
+answers. If that offer has no `a=msid`, str0m generates both IDs. Media
+created locally uses the IDs supplied to `SdpApi::add_media()`, or generated
+defaults.
+
+The chosen IDs belong to that m-line for its lifetime. A later remote SDP
+cannot replace them. In particular, changing direction from `sendrecv` to
+`inactive` and back to `sendrecv` keeps the same `a=msid`. This follows the
+stability rule for non-stopped transceivers in [RFC 9429 sections 5.2.2 and
+5.3.2][rfc9429]: previously present `a=msid` lines stay the same in later
+locally generated offers and answers, regardless of direction or track changes.
+Stopping a transceiver is different: its m-line is rejected and its `a=msid`
+lines are removed. Reusing a rejected m-line for a new transceiver is outside
+this policy.
+
+An offered stream ID of `-` is the exception: it means the offered track has no
+MediaStream. For this case, generate a new stream and track ID rather than copy
+that sentinel into our answer. Those generated IDs then remain fixed for that
+m-line too.
+
+[RFC 8830 section 3.2.3][rfc8830] says that an offer's `a=msid` values do not
+influence the answer. Copying ordinary offered IDs is a deliberate departure
+from that procedure to preserve the existing `Media` API behavior. str0m does
+not maintain separate incoming and outgoing MSIDs.
+
 ## The SDP Offer/Answer spec
 
 These quotes are from the [spec section 6.1][sdpspec]:
@@ -23,7 +88,7 @@ For an OFFER with `sendonly`, the payload types (and PT numbers) mean "this is w
 I **hope to send**". They are suggestions the ANSWER can change.
 
 For an ANSWER with `sendonly`, the payload types (and PT numbers) indicating what it hopes to send.
-I conclude they are not interesting, because the receiving side (the OFFER), has already dictated
+We conclude they are not interesting, because the receiving side (the OFFER), has already dictated
 "this is what I expect to receive". The ANSWER side is not allowed use anything else – it might as well
 just mirror the OFFER.
 
@@ -75,6 +140,25 @@ Safari/Chrome/FF all respond with the PT in the OFFER. There probably is no reas
 anything else. It's as if we collectively pretend that SHOULD is a MUST, and implement accordingly.
 
 str0m does this too. Sauce for the goose…
+
+### TWCC feedback across m-lines
+
+str0m assumes `fb_transport_cc` is a per-PT capability shared across the
+BUNDLE/session. For each PT, the first matching remote payload parameters
+determine whether TWCC feedback is enabled, provided it is enabled locally.
+Later m-lines using that PT do not change the result, even if they advertise
+different `a=rtcp-fb:<pt> transport-cc` support. We do not model that distinction.
+The transport sequence number header extension must still be negotiated on
+the m-line carrying the RTP packets. As with other codec parameters, feedback
+capabilities are retained when an existing m-line is renegotiated.
+
+### Telephone-event ranges across m-lines
+
+str0m keeps one negotiated telephone-event range per payload type in
+`Session::codec_config`. It takes the smaller local and remote maximum and uses
+that range in both directions and on every m-line sharing the PT. SDP can
+express different receive capabilities in each direction and on different
+m-lines; str0m does not model those distinctions.
 
 ### Renegotiation and narrowed PT lists
 
@@ -181,5 +265,10 @@ m-line (max-bundle style).
 | 9    | Yes             | Valid bundled m-line (max-compat style) |
 
 [quote]: https://mailarchive.ietf.org/arch/msg/mmusic/2N1_-eUTVrmciX3LpSjkjFH7oCU/
+
+[^plan-b]: Plan B was the better direction. :)
+
+[rfc9429]: https://www.rfc-editor.org/rfc/rfc9429.html#section-5.2.2
+[rfc8830]: https://www.rfc-editor.org/rfc/rfc8830.html#section-3.2.3
 [sdpspec]: https://datatracker.ietf.org/doc/html/rfc3264#section-6.1
 [rfc8843]: https://datatracker.ietf.org/doc/html/rfc8843

@@ -57,13 +57,15 @@ check-web:
 check-scripts:
 	$(PYTHON) -m unittest discover -s scripts -p 'test_*.py'
 check-transport-patches:
-	$(CARGO) test --manifest-path firmware/vendor/sctp-proto/Cargo.toml --locked --lib --target-dir artifacts/vendor-tests
+	$(CARGO) test --manifest-path firmware/vendor/sctp-proto/Cargo.toml --locked --tests --target-dir artifacts/vendor-tests
 	$(CARGO) test --manifest-path firmware/vendor/str0m/Cargo.toml --locked --no-default-features --features rust-crypto --lib \
+	  --config 'patch.crates-io.dimpl.path="firmware/vendor/dimpl"' \
 	  --config 'patch.crates-io.sctp-proto.path="firmware/vendor/sctp-proto"' \
 	  --config 'patch.crates-io.str0m-rust-crypto.path="firmware/vendor/str0m-rust-crypto"' \
 	  --target-dir artifacts/vendor-tests
 	$(CARGO) test --manifest-path firmware/vendor/str0m/Cargo.toml --locked --no-default-features --features rust-crypto,_internal_test_exports \
 	  --test contiguous --test keyframes --test loss \
+	  --config 'patch.crates-io.dimpl.path="firmware/vendor/dimpl"' \
 	  --config 'patch.crates-io.sctp-proto.path="firmware/vendor/sctp-proto"' \
 	  --config 'patch.crates-io.str0m-rust-crypto.path="firmware/vendor/str0m-rust-crypto"' \
 	  --target-dir artifacts/vendor-tests

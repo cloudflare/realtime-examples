@@ -132,6 +132,7 @@ try {
         firmware: peer.__telemetry?.firmware,
         music: peer.__telemetry?.music,
         hardware: peer.__telemetry?.hardware,
+        radioStackFree: peer.__telemetry?.stackFree,
         uptimeMs: peer.__telemetry?.uptimeMs,
         hasRandom: Object.hasOwn(peer.__telemetry, 'random'),
         nowPlaying: peer.__nowPlaying,
@@ -161,6 +162,7 @@ try {
       sample.hardware.chipTemperatureMc >= -10000 && sample.hardware.chipTemperatureMc <= 80000,
     );
     assert.ok(sample.hardware.internal.free > 0);
+    assert.ok(sample.radioStackFree > 0);
     assert.ok(sample.hardware.psram.free > 0 && sample.hardware.psram.free <= 16 * 1024 * 1024);
     assert.ok(sample.uptimeMs - sample.hardware.sampledAtMs <= 3000);
     assert.equal(sample.source, 'fft');

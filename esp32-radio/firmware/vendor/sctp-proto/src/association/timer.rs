@@ -112,6 +112,11 @@ impl TimerTable {
         self.no_error_count[timer as usize] = false;
     }
 
+    /// Clear peer error accounting without changing the recovery deadline.
+    pub fn reset_retrans(&mut self, timer: Timer) {
+        self.retrans[timer as usize] = 0;
+    }
+
     /// Exempt the timer's next expiry from the `max_retrans` accounting.
     pub fn suppress_error_count(&mut self, timer: Timer) {
         self.no_error_count[timer as usize] = true;

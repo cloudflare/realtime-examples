@@ -16,6 +16,9 @@ const MAX_BITRATE: Bitrate = Bitrate::gbps(10);
 const MAX_DEBT_IN_TIME: Duration = Duration::from_millis(500);
 const PADDING_BURST_INTERVAL: Duration = Duration::from_millis(5);
 const PACING: Duration = Duration::from_millis(40);
+/// Max size of a burst of paced media packets, to not risk overfilling socket buffers at
+/// high bitrates. Same as libwebrtc's `PacingController::kMaxBurstSize`.
+const MAX_BURST_SIZE: DataSize = DataSize::bytes(63_000);
 
 /// A leaky bucket pacer that can overshoot the target bitrate when required.
 pub struct LeakyBucketPacer {
@@ -47,8 +50,6 @@ pub struct LeakyBucketPacer {
     completed_probe: Option<TwccClusterId>,
     /// Gates poll_queue() until handle_timeout() is called after packet emission.
     needs_timeout_before_next_poll: bool,
-    /// Caches whether we have any queue to send padding on (RTX).
-    has_padding_queue: bool,
 }
 
 impl Pacer for LeakyBucketPacer {
@@ -160,10 +161,6 @@ impl Pacer for LeakyBucketPacer {
             self.completed_probe = Some(cluster_id);
         }
     }
-
-    fn has_padding_queue(&self) -> bool {
-        self.has_padding_queue
-    }
 }
 
 impl LeakyBucketPacer {
@@ -185,7 +182,6 @@ impl LeakyBucketPacer {
             probe_queue: VecDeque::new(),
             completed_probe: None,
             needs_timeout_before_next_poll: true,
-            has_padding_queue: false,
         }
     }
 
@@ -196,6 +192,7 @@ impl LeakyBucketPacer {
     pub(crate) fn start_probe(&mut self, config: ProbeClusterConfig) {
         trace!(?config, "Probe start");
         self.probe_queue.push_back(ProbeClusterState::new(config));
+        self.request_immediate_timeout();
     }
 
     /// Get the cluster ID of the active probe, if any.
@@ -259,9 +256,9 @@ impl LeakyBucketPacer {
                 .iter()
                 .filter(|q| q.snapshot.packet_count > 0);
 
-            return queues
-                .next()
-                .map(|q| ((now, PacerReason::FirstEver), Some(q)));
+            if let Some(queue) = queues.next() {
+                return Some(((now, PacerReason::FirstEver), Some(queue)));
+            }
         };
 
         let unpaced = self
@@ -296,8 +293,11 @@ impl LeakyBucketPacer {
                 } else {
                     // Normal pacing: use relative offset based on debt
                     let drain_debt_time = self.media_debt / self.adjusted_bitrate;
-                    let next_send_offset = if drain_debt_time > PACING {
-                        // If we have incurred too much debt we need to wait to let it clear out before sending
+                    // Limit the burst to MAX_BURST_SIZE so high bitrates don't overfill socket
+                    // buffers. Below ~12.6 Mbps this is PACING.
+                    let burst_interval = PACING.min(MAX_BURST_SIZE / self.adjusted_bitrate);
+                    let next_send_offset = if drain_debt_time >= burst_interval {
+                        // If we have incurred too much debt, wait for it to clear before sending.
                         // again.
                         drain_debt_time
                     } else {
@@ -317,9 +317,7 @@ impl LeakyBucketPacer {
         }
 
         let any_queue_for_padding = self.queue_states.iter().any(|q| q.use_for_padding);
-        let padding_possible = self.padding_bitrate > Bitrate::ZERO && any_queue_for_padding;
-
-        if !padding_possible {
+        if !any_queue_for_padding {
             return None;
         }
 
@@ -329,6 +327,10 @@ impl LeakyBucketPacer {
             // We explicitly don't return a queue to poll here. We need another call to
             // handle_timeout to request the padding before we can poll the selected queue.
             return Some(((next_probe_time, PacerReason::Probe2), None));
+        }
+
+        if self.padding_bitrate == Bitrate::ZERO {
+            return None;
         }
 
         // If all queues are empty and we have a padding rate, wait until we have drained
@@ -414,10 +416,7 @@ impl LeakyBucketPacer {
             .filter(|q| q.use_for_padding)
             .max_by_key(|q| q.snapshot.last_emitted);
 
-        // Save whether we have a valid padding queue.
-        self.has_padding_queue = maybe_queue.is_some();
-
-        if !self.has_padding_queue {
+        if maybe_queue.is_none() {
             // No padding queue, no probes.
             self.probe_queue.clear();
         }
@@ -488,6 +487,42 @@ mod test {
     use crate::rtp_::{DataSize, Mid, RtpHeader};
     use queue::{PacketKind, Queue, QueuedPacket};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn probe_deadline_without_media_or_regular_padding() {
+        use crate::bwe_::ProbeKind;
+
+        let now = Instant::now();
+        let mut pacer = LeakyBucketPacer::new(Bitrate::kbps(300));
+        let queue = QueueState {
+            midrid: MidRid("probe".into(), None),
+            unpaced: false,
+            use_for_padding: true,
+            snapshot: QueueSnapshot {
+                created_at: now,
+                ..Default::default()
+            },
+        };
+        pacer.handle_timeout(now, std::iter::once(queue));
+        pacer.start_probe(ProbeClusterConfig::new(
+            0.into(),
+            Bitrate::kbps(300),
+            ProbeKind::Initial,
+        ));
+        let request = pacer.handle_timeout(now, std::iter::once(queue)).unwrap();
+        let (midrid, cluster) = pacer.poll_queue().unwrap();
+        assert_eq!(cluster, Some(0.into()));
+        pacer.register_send(now, request.padding.into(), midrid);
+        assert!(pacer.handle_timeout(now, std::iter::once(queue)).is_none());
+        let deadline = pacer.poll_timeout().0.unwrap();
+        assert!(deadline > now && deadline <= now + Duration::from_millis(10));
+        assert!(pacer.poll_queue().is_none());
+        assert!(
+            pacer
+                .handle_timeout(deadline, std::iter::once(queue))
+                .is_some()
+        );
+    }
 
     #[test]
     fn test_typical_behavior() {
@@ -653,7 +688,7 @@ mod test {
             &mut pacer,
             &mut queue,
             1,
-            22,
+            21,
             PacketKind::Video,
             now + duration_ms(21),
         );
@@ -772,7 +807,7 @@ mod test {
             &mut pacer,
             &mut queue,
             1,
-            22,
+            21,
             PacketKind::Video,
             now + duration_ms(21),
         );
@@ -917,6 +952,79 @@ mod test {
         assert_eq!(state.snapshot.last_emitted, Some(now + duration_ms(500)));
         assert_eq!(state.snapshot.first_unsent, Some(now + duration_ms(19)));
         assert_eq!(state.snapshot.priority, QueuePriority::Media);
+    }
+
+    #[test]
+    fn test_max_burst_size_at_high_bitrate() {
+        // At 50 Mbps a full PACING interval is 250 kB, which is well above MAX_BURST_SIZE.
+        let (burst, next_poll) = measure_burst(Bitrate::mbps(50), 1200, 500);
+
+        assert!(
+            burst <= MAX_BURST_SIZE + DataSize::bytes(1200),
+            "Burst of {burst} should not exceed MAX_BURST_SIZE by more than one packet"
+        );
+        assert!(
+            burst > MAX_BURST_SIZE,
+            "Burst of {burst} should fill up to MAX_BURST_SIZE"
+        );
+        // 63 kB at 50 Mbps drains in ~10 ms.
+        assert!(
+            next_poll >= duration_ms(10) && next_poll < PACING,
+            "Pacer should wait for the burst to drain, got {next_poll:?}"
+        );
+
+        // When packet sizes divide the limit exactly, stop at the limit rather than
+        // sending another packet.
+        let (burst, _) = measure_burst(Bitrate::mbps(50), 1000, 500);
+        assert_eq!(burst, MAX_BURST_SIZE);
+    }
+
+    #[test]
+    fn test_burst_size_unchanged_at_low_bitrate() {
+        // At 10 Mbps a PACING interval is 50 kB, below MAX_BURST_SIZE, so PACING still governs
+        // the burst: debt may grow to 50 kB, then the pacer waits.
+        let (burst, next_poll) = measure_burst(Bitrate::mbps(10), 1000, 500);
+        assert_eq!(burst, DataSize::bytes(50_000));
+        // Nothing is sent before the regular PACING tick.
+        assert_eq!(next_poll, PACING);
+
+        // At 1 Mbps a PACING interval is 5 kB. Queue less here so the queue drain logic
+        // doesn't raise the adjusted bitrate.
+        let (burst, next_poll) = measure_burst(Bitrate::mbps(1), 1000, 50);
+        assert_eq!(burst, DataSize::bytes(5_000));
+        // Nothing is sent before the regular PACING tick.
+        assert_eq!(next_poll, PACING);
+    }
+
+    /// Queue `count` video packets of `size` bytes at once and poll the pacer until it
+    /// stops releasing packets without time moving forward.
+    ///
+    /// Returns the number of bytes released in that burst and how long after the burst the
+    /// pacer wants to be polled again.
+    fn measure_burst(bitrate: Bitrate, size: usize, count: u16) -> (DataSize, Duration) {
+        let now = Instant::now();
+        let mut queue = Queue::default();
+        let mut pacer = LeakyBucketPacer::new(bitrate);
+        handle_timeout_noisy(&mut pacer, &mut queue, now);
+
+        let at = now + duration_ms(1);
+        for seq_no in 0..count {
+            enqueue_packet_noisy(&mut pacer, &mut queue, seq_no, size, PacketKind::Video, at);
+        }
+
+        let mut burst = DataSize::ZERO;
+        while let Some((qid, _)) = pacer.poll_queue() {
+            let packet = queue.next_packet().unwrap();
+            pacer.register_send(at, DataSize::from(packet.size()), qid);
+            queue.register_send(qid, at);
+            handle_timeout_noisy(&mut pacer, &mut queue, at);
+            burst += DataSize::from(packet.size());
+        }
+
+        assert!(!queue.is_empty(), "The burst should be cut short by pacing");
+
+        let next_poll = pacer.poll_timeout().0.unwrap();
+        (burst, next_poll - at)
     }
 
     #[test]

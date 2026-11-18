@@ -8,6 +8,7 @@ use crate::channel::ChannelId;
 use crate::crypto::Fingerprint;
 use crate::crypto::dtls::ProtocolVersion;
 use crate::media::{Media, MediaKind};
+use crate::poll::RtcMut;
 use crate::rtp_::MidRid;
 use crate::rtp_::{Mid, Rid, Ssrc};
 use crate::sctp::{ChannelConfig, SctpInitData};
@@ -35,7 +36,10 @@ use crate::streams::{DEFAULT_RTX_CACHE_DURATION, DEFAULT_RTX_RATIO_CAP, StreamRx
 ///  result in panics.
 /// </div>
 pub struct DirectApi<'a> {
-    rtc: &'a mut Rtc,
+    // `RtcMut` arms the readiness on mutable deref only, so the `&mut self`
+    // methods below re-poll the tree while the `&self` readers do not — with no
+    // per-method call to forget. See [`crate::poll`].
+    rtc: RtcMut<'a>,
 }
 
 impl<'a> DirectApi<'a> {
@@ -44,7 +48,9 @@ impl<'a> DirectApi<'a> {
     /// The `DirectApi` struct provides a high-level API for interacting with a WebRTC peer connection,
     /// and the `Rtc` instance provides low-level access to the underlying WebRTC functionality.
     pub fn new(rtc: &'a mut Rtc) -> Self {
-        DirectApi { rtc }
+        DirectApi {
+            rtc: RtcMut::new(rtc),
+        }
     }
 
     /// Sets the ICE controlling flag for this peer connection.
@@ -176,7 +182,9 @@ impl<'a> DirectApi<'a> {
 
     /// Close a data channel.
     pub fn close_data_channel(&mut self, channel_id: ChannelId) {
-        self.rtc.chan.close_channel(channel_id, &mut self.rtc.sctp);
+        // One arming deref, then split-borrow the real `&mut Rtc`.
+        let rtc = &mut *self.rtc;
+        rtc.chan.close_channel(channel_id, &mut rtc.sctp);
     }
 
     /// Set whether to enable ice-lite.
@@ -237,6 +245,15 @@ impl<'a> DirectApi<'a> {
         self.rtc.session.remove_media(mid);
     }
 
+    /// Turn RFC 2198 RED wrapping on or off on the send side at runtime.
+    ///
+    /// This only decides whether outgoing packets are wrapped in RED right now; it needs no
+    /// renegotiation. Enabling has no effect on media where RED is not available. Returns whether
+    /// the setting changed (`false` if the media does not exist or the value was already set).
+    pub fn set_red_send(&mut self, mid: Mid, enabled: bool) -> bool {
+        self.rtc.session.set_red_send(mid, enabled)
+    }
+
     /// Allow incoming traffic from remote peer for the given SSRC.
     ///
     /// Can be called multiple times if the `rtx` is discovered later via RTP header extensions.
@@ -281,7 +298,7 @@ impl<'a> DirectApi<'a> {
     /// Obtain a recv stream by looking it up via mid/rid.
     pub fn stream_rx_by_mid(&mut self, mid: Mid, rid: Option<Rid>) -> Option<&mut StreamRx> {
         let midrid = MidRid(mid, rid);
-        self.rtc.session.streams.stream_rx_by_midrid(midrid, true)
+        self.rtc.session.streams.stream_rx_by_midrid(midrid)
     }
 
     /// Declare the intention to send data using the given SSRC.
@@ -298,7 +315,10 @@ impl<'a> DirectApi<'a> {
         mid: Mid,
         rid: Option<Rid>,
     ) -> &mut StreamTx {
-        let Some(media) = self.rtc.session.media_by_mid_mut(mid) else {
+        // One arming deref, then split-borrow the real `&mut Rtc`.
+        let rtc = &mut *self.rtc;
+
+        let Some(media) = rtc.session.media_by_mid_mut(mid) else {
             panic!("No media declared for mid: {}", mid);
         };
 
@@ -311,16 +331,12 @@ impl<'a> DirectApi<'a> {
             media.add_to_rid_tx(rid);
         }
 
-        let stream = self
-            .rtc
-            .session
-            .streams
-            .declare_stream_tx(ssrc, rtx, midrid);
+        let stream = rtc.session.streams.declare_stream_tx(ssrc, rtx, midrid);
 
         let size = if is_audio {
-            self.rtc.session.send_buffer_audio
+            rtc.session.send_buffer_audio
         } else {
-            self.rtc.session.send_buffer_video
+            rtc.session.send_buffer_video
         };
 
         stream.set_rtx_cache(size, DEFAULT_RTX_CACHE_DURATION, DEFAULT_RTX_RATIO_CAP);
@@ -404,9 +420,11 @@ impl<'a> DirectApi<'a> {
         media_ssrc: Ssrc,
         payload: impl Into<Arc<[u8]>>,
     ) {
-        self.rtc
-            .session
+        let mut m = self.rtc.mutate();
+        m.session
             .send_app_specific_feedback(sender_ssrc, media_ssrc, payload);
+        // Only queues RTCP feedback, drained from the transmit path; no timer.
+        m.no_timeout();
     }
 
     /// Send a Picture Loss Indication (PLI, PT=206 FMT=1) for a media stream,
