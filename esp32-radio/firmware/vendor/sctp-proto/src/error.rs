@@ -82,6 +82,8 @@ pub enum Error {
     ErrSsnResetRequestParamInvalidLength,
     #[error("reconfig response parameter too short")]
     ErrReconfigRespParamTooShort,
+    #[error("supported address types parameter has an invalid length")]
+    ErrSupportedAddressTypesParamInvalidLength,
     #[error("invalid algorithm type")]
     ErrInvalidAlgorithmType,
 
@@ -159,6 +161,8 @@ pub enum Error {
     ErrUnexpectedChuckPoppedOrdered,
     #[error("unexpected q state (should've been selected)")]
     ErrUnexpectedQState,
+    #[error("receive buffer exhausted during message reassembly")]
+    ErrReceiveBufferExhausted,
     #[error("try again")]
     ErrTryAgain,
 

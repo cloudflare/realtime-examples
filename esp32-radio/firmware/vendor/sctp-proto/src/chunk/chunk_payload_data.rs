@@ -100,17 +100,19 @@ pub struct ChunkPayloadData {
 
     /// Whether this data chunk was acknowledged (received by peer)
     pub(crate) acked: bool,
-    pub(crate) miss_indicator: u32,
+    /// Missing reports saturate at the fast-retransmit threshold of three.
+    pub(crate) miss_indicator: u8,
+
+    /// Sender-only identity shared by value across a message's fragments.
+    pub(crate) message_id: u64,
+    pub(crate) abandoned: bool,
 
     /// Partial-reliability parameters used only by sender
     pub(crate) since: Option<Instant>,
+    pub(crate) reliability: Option<(crate::ReliabilityType, u32)>,
+    pub(crate) deadline: Option<Instant>,
     /// number of transmission made for this chunk
     pub(crate) nsent: u32,
-
-    /// valid only with the first fragment
-    pub(crate) abandoned: bool,
-    /// valid only with the first fragment
-    pub(crate) all_inflight: bool,
 
     /// Retransmission flag set when T1-RTX timeout occurred and this
     /// chunk is still in the inflight queue
@@ -131,10 +133,12 @@ impl Default for ChunkPayloadData {
             user_data: Bytes::new(),
             acked: false,
             miss_indicator: 0,
-            since: None,
-            nsent: 0,
+            message_id: 0,
             abandoned: false,
-            all_inflight: false,
+            since: None,
+            reliability: None,
+            deadline: None,
+            nsent: 0,
             retransmit: false,
         }
     }
@@ -209,10 +213,12 @@ impl Chunk for ChunkPayloadData {
 
             acked: false,
             miss_indicator: 0,
-            since: None,
-            nsent: 0,
+            message_id: 0,
             abandoned: false,
-            all_inflight: false,
+            since: None,
+            reliability: None,
+            deadline: None,
+            nsent: 0,
             retransmit: false,
         })
     }
@@ -239,21 +245,5 @@ impl Chunk for ChunkPayloadData {
 
     fn as_any(&self) -> &(dyn Any + Send + Sync) {
         self
-    }
-}
-
-impl ChunkPayloadData {
-    pub(crate) fn abandoned(&self) -> bool {
-        self.abandoned && self.all_inflight
-    }
-
-    pub(crate) fn set_abandoned(&mut self, abandoned: bool) {
-        self.abandoned = abandoned;
-    }
-
-    pub(crate) fn set_all_inflight(&mut self) {
-        if self.ending_fragment {
-            self.all_inflight = true;
-        }
     }
 }

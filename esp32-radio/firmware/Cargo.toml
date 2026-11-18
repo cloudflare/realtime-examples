@@ -1,27 +1,28 @@
 [workspace]
 members = ["crates/radio-core", "crates/radio-webrtc", "crates/esp32-radio"]
 default-members = ["crates/radio-core", "crates/radio-webrtc"]
-exclude = ["vendor/str0m-rust-crypto", "vendor/str0m", "vendor/sctp-proto"]
+exclude = ["vendor/dimpl", "vendor/str0m-rust-crypto", "vendor/str0m", "vendor/sctp-proto"]
 resolver = "3"
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.89"
 publish = false
 
 [workspace.dependencies]
 radio-core = { path = "crates/radio-core" }
 radio-webrtc = { path = "crates/radio-webrtc" }
-str0m = { version = "=0.23.1", default-features = false }
-str0m-rust-crypto = { version = "=0.6.0", default-features = false }
+str0m = { version = "=0.25.0", default-features = false }
+str0m-rust-crypto = { version = "=0.7.0", default-features = false }
 serde = { version = "=1.0.229", features = ["derive"] }
-serde_json = "=1.0.151"
-crc32fast = "=1.5.2"
-dimpl = { version = "=0.7.3", default-features = false, features = ["rust-crypto"] }
-zeroize = "=1.9.0"
+serde_json = "=1.0.154"
+crc32fast = "=1.5.5"
+dimpl = { version = "=0.9.0", default-features = false, features = ["rust-crypto"] }
+zeroize = "=1.9.2"
 
 [patch.crates-io]
+dimpl = { path = "vendor/dimpl" }
 str0m-rust-crypto = { path = "vendor/str0m-rust-crypto" }
 str0m = { path = "vendor/str0m" }
 sctp-proto = { path = "vendor/sctp-proto" }

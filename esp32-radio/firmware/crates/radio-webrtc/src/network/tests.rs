@@ -28,7 +28,7 @@ impl Remote {
                 private_key: KEY.to_vec(),
             })
             .clear_codecs()
-            .enable_opus(true)
+            .enable_opus(true, false)
             .build(Instant::now());
         rtc.add_local_candidate(Candidate::host(socket.local_addr().unwrap(), "udp").unwrap());
         let mut remote = Self { rtc, socket };

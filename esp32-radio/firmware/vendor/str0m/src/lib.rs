@@ -1,4 +1,7 @@
-//! <image src="https://user-images.githubusercontent.com/227204/226143511-66fe5264-6ab7-47b9-9551-90ba7e155b96.svg" alt="str0m logo" ></image>
+//! <image
+//! src="https://user-images.githubusercontent.com/227204/226143511-66fe5264-6ab7-47b9-9551-90ba7e155b96.svg"
+//!     alt="str0m logo" >
+//! </image>
 //!
 //! A Sans I/O WebRTC implementation in Rust.
 //!
@@ -13,7 +16,10 @@
 //!
 //! We are discussing str0m things on Discord. Join us using this [invitation link][discord].
 //!
-//! <image width="300px" src="https://user-images.githubusercontent.com/227204/209446544-f8a8d673-cb1b-4144-a0f2-42307b8d8869.gif" alt="silly clip showing video playing" ></image>
+//! <image width="300px"
+//! src="https://user-images.githubusercontent.com/227204/209446544-f8a8d673-cb1b-4144-a0f2-42307b8d8869.gif"
+//!     alt="silly clip showing video playing" >
+//! </image>
 //!
 //! # Usage
 //!
@@ -343,12 +349,12 @@
 //! | `openssl`         | `str0m-openssl`       | OpenSSL (DTLS 1.2 only)          | All       |
 //! | `openssl-dimpl`   | `str0m-openssl`       | dimpl + OpenSSL crypto           | All       |
 //! | `apple-crypto`    | `str0m-apple-crypto`  | dimpl + Apple CryptoKit          | macOS/iOS |
-//! | `wincrypto`       | `str0m-wincrypto`     | Windows SChannel (DTLS 1.2 only) | Windows   |
-//! | `wincrypto-dimpl` | `str0m-wincrypto`     | dimpl + Windows CNG              | Windows   |
+//! | `wincrypto`       | `str0m-wincrypto`     | dimpl + Windows CNG             | Windows   |
+//! | `wincrypto-dimpl` | `str0m-wincrypto`     | Alias for `wincrypto`           | Windows   |
 //!
 //! If multiple backend features are enabled, str0m automatically selects the backend in this
 //! priority order: `aws-lc-rs`, `rust-crypto`, `openssl-dimpl`, `openssl`, `apple-crypto`
-//! (Apple platforms only), `wincrypt-dimpl` (Windows only), `wincrypto` (Windows only).
+//! (Apple platforms only), `wincrypto` (Windows only).
 //!
 //! If you disable the default features, you MUST explicitly configure an alternative
 //! crypto backend either process-wide or per-instance.
@@ -658,6 +664,8 @@
 //! [reqkey2]:    https://docs.rs/str0m/*/str0m/rtp/struct.StreamRx.html#method.request_keyframe
 //! [bitwhip]:    https://github.com/bitwhip/bitwhip
 
+// Avoid rewriting existing code: nested conditions are often more readable than long if-chains.
+#![allow(clippy::collapsible_if)]
 #![forbid(unsafe_code)]
 #![allow(clippy::new_without_default)]
 #![allow(clippy::bool_to_int_with_if)]
@@ -668,7 +676,7 @@
 #![allow(clippy::precedence)]
 #![allow(clippy::doc_overindented_list_items)]
 #![allow(clippy::uninlined_format_args)]
-#![allow(unknown_lints, mismatched_lifetime_syntaxes)]
+#![allow(mismatched_lifetime_syntaxes)]
 #![deny(clippy::needless_pass_by_ref_mut)]
 #![deny(missing_docs)]
 
@@ -783,7 +791,8 @@ pub mod rtp {
     pub use crate::rtp_::{Extension, ExtensionMap, ExtensionSerializer};
 
     pub use crate::packet::{
-        Vp8Descriptor, Vp8DescriptorError, Vp8Patch, Vp8PatchBuilder, Vp8PatchError,
+        RedBlock, RedDecoder, RedEncoder, RedundantBlock, Vp8Descriptor, Vp8DescriptorError,
+        Vp8Patch, Vp8PatchBuilder, Vp8PatchError,
     };
     pub use crate::rtp_::{RtpHeader, SeqNo, Ssrc, VideoOrientation};
     pub use crate::streams::{
@@ -840,6 +849,9 @@ pub mod change;
 
 mod util;
 use util::{Soonest, not_happening};
+
+mod poll;
+use crate::poll::Readiness;
 
 mod session;
 use session::Session;
@@ -923,6 +935,13 @@ pub struct Rtc {
     crypto_provider: Arc<crate::crypto::CryptoProvider>,
     fingerprint_verification: bool,
     close_dtls_started: bool,
+    // Signals which halves of the tree may need re-polling. Written locally by
+    // the components that mutate, via the `Wake` guard handed down the tree;
+    // read (and cleared) by `poll_output`. See the `poll` module.
+    readiness: Readiness,
+    // Last timeout returned by `poll_output`, reused while the readiness says
+    // the timeout is still valid.
+    cached_timeout: Instant,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1141,6 +1160,8 @@ pub enum Reason {
     /// Sending of RTP NACK.
     ///
     /// When missing packets are discovered, a NACK is scheduled.
+    /// Retries for each packet wait for the receive-stream RTT plus 5 ms,
+    /// using a 100 ms RTT until a measurement is available.
     Nack,
 
     /// Reporting of TWCC (if enabled).
@@ -1163,6 +1184,9 @@ pub enum Reason {
     ///
     /// Written media data needs packetizing. This is not used in RTP mode.
     Packetize,
+
+    /// A complete video frame is waiting for missing earlier packets or its timeout.
+    ReceiveReorder,
 
     /// Pacer doing things.
     Pacer(PacerReason),
@@ -1252,10 +1276,15 @@ impl Rtc {
              crypto provider that supports certificate generation.",
             );
 
-        let mut sctp = RtcSctp::with_receive_limits(*mtu.start(), config.sctp_receive_limits);
+        let mut sctp = RtcSctp::with_receive_limits(
+            *mtu.start(),
+            config.sctp_max_message_size,
+            config.sctp_receive_limits,
+        );
         if config.snap_enabled {
             sctp.enable_snap();
         }
+        sctp.set_max_buffered_amount(config.sctp_max_buffered_amount);
 
         Ok(Rtc {
             state: RtcState::Alive,
@@ -1288,6 +1317,8 @@ impl Rtc {
             crypto_provider,
             fingerprint_verification: config.fingerprint_verification,
             close_dtls_started: false,
+            readiness: Readiness::armed(),
+            cached_timeout: start,
         })
     }
 
@@ -1361,6 +1392,9 @@ impl Rtc {
     ///
     /// [1]: https://www.rfc-editor.org/rfc/rfc8838.txt
     pub fn add_local_candidate(&mut self, c: Candidate) -> Option<&Candidate> {
+        // ICE is an external crate and can't take a `Wake`; adding a candidate
+        // can start connectivity checks (transmits) and arm timers.
+        self.wake_all();
         self.ice.add_local_candidate(c)
     }
 
@@ -1385,6 +1419,8 @@ impl Rtc {
     ///
     /// [1]: https://www.rfc-editor.org/rfc/rfc8838.txt
     pub fn add_remote_candidate(&mut self, c: Candidate) {
+        // ICE is an external crate and can't take a `Wake`; see above.
+        self.wake_all();
         self.ice.add_remote_candidate(c);
     }
 
@@ -1465,11 +1501,16 @@ impl Rtc {
             return None;
         }
 
+        // Disjoint borrows let the writer arm readiness within each mutation.
+        let Rtc {
+            session, readiness, ..
+        } = self;
+
         // This does not catch potential RIDs required to send simulcast, but
         // it's a good start. An error might arise later on RID mismatch.
-        self.session.media_by_mid_mut(mid)?;
+        session.media_by_mid(mid)?;
 
-        Some(Writer::new(&mut self.session, mid))
+        Some(Writer::new(session, readiness, mid))
     }
 
     /// Currently configured media.
@@ -1546,7 +1587,13 @@ impl Rtc {
     ///
     /// See [`Rtc`] instance documentation for how this is expected to be used in a loop.
     pub fn poll_output(&mut self) -> Result<Output, RtcError> {
-        let o = self.do_poll_output()?;
+        // SCTP packets fed into DTLS require another pass. Loop here so a large
+        // batch does not grow the stack with one recursive call per packet.
+        let o = loop {
+            if let Some(o) = self.do_poll_output()? {
+                break o;
+            }
+        };
 
         match &o {
             Output::Event(e) => match e {
@@ -1574,10 +1621,20 @@ impl Rtc {
         Ok(o)
     }
 
-    fn do_poll_output(&mut self) -> Result<Output, RtcError> {
+    /// Conservatively re-poll the whole tree.
+    fn wake_all(&mut self) {
+        drop(self.readiness.wake());
+    }
+
+    // Returns None when polling must restart after handling an SCTP packet.
+    fn do_poll_output(&mut self) -> Result<Option<Output>, RtcError> {
         if self.state == RtcState::Closed {
             self.last_timeout_reason = Reason::NotHappening;
-            return Ok(Output::Timeout(not_happening()));
+            return Ok(Some(Output::Timeout(not_happening())));
+        }
+
+        if !self.readiness.wants_events() {
+            return Ok(Some(Output::Timeout(self.poll_timeout())));
         }
 
         while let Some(e) = self.ice.poll_event() {
@@ -1586,7 +1643,7 @@ impl Rtc {
                     //
                 }
                 IceAgentEvent::IceConnectionStateChange(v) => {
-                    return Ok(Output::Event(Event::IceConnectionStateChange(v)));
+                    return Ok(Some(Output::Event(Event::IceConnectionStateChange(v))));
                 }
                 IceAgentEvent::DiscoveredRecv { proto, source } => {
                     debug!("ICE remote address: {:?}/{:?}", Pii(source), proto);
@@ -1659,15 +1716,32 @@ impl Rtc {
                 }
                 DtlsOutput::PeerCert(der) => {
                     debug!("DTLS verify remote fingerprint");
-                    // Compute fingerprint from peer's DER certificate
-                    let fingerprint = crate::crypto::Fingerprint {
-                        hash_func: "sha-256".to_string(),
-                        bytes: self.crypto_provider.sha256_provider.sha256(der).to_vec(),
-                    };
+                    // Compute the fingerprint of the peer's DER certificate with the hash
+                    // function of the expected one (RFC 8122 §5): sha-256, or sha-1 as some
+                    // endpoints still announce. sha-256 when there is none to compare with.
+                    let provider = &self.crypto_provider;
+                    let matching = self.remote_fingerprint.as_ref().and_then(|expected| {
+                        crate::crypto::Fingerprint::of_certificate(
+                            der,
+                            &expected.hash_func,
+                            provider,
+                        )
+                    });
+                    let fingerprint = matching.clone().unwrap_or_else(|| {
+                        crate::crypto::Fingerprint::of_certificate(der, "sha-256", provider)
+                            .expect("sha-256 is supported")
+                    });
                     self.dtls.set_remote_fingerprint(fingerprint.clone());
                     if let Some(expected) = &self.remote_fingerprint {
                         if !self.fingerprint_verification {
                             debug!("DTLS fingerprint verification disabled");
+                        } else if matching.is_none() {
+                            let message = format!(
+                                "unsupported fingerprint hash function: {}",
+                                expected.hash_func
+                            );
+                            self.disconnect();
+                            return Err(RtcError::RemoteSdp(message));
                         } else if fingerprint != *expected {
                             self.disconnect();
                             return Err(RtcError::RemoteSdp("remote fingerprint no match".into()));
@@ -1686,7 +1760,7 @@ impl Rtc {
                 }
                 DtlsOutput::CloseNotify => {
                     self.start_close()?;
-                    return Ok(Output::Event(Event::Closed));
+                    return Ok(Some(Output::Event(Event::Closed)));
                 }
                 other => {
                     return Err(RtcError::Dtls(DtlsError::Io(std::io::Error::other(
@@ -1697,7 +1771,7 @@ impl Rtc {
         }
 
         if just_connected {
-            return Ok(Output::Event(Event::Connected));
+            return Ok(Some(Output::Event(Event::Connected)));
         }
 
         while let Some(e) = self.sctp.poll() {
@@ -1716,7 +1790,7 @@ impl Rtc {
                                 if !packets.is_empty() {
                                     self.sctp.push_back_transmit(packets);
                                 }
-                                return self.do_poll_output();
+                                return Ok(None);
                             } else {
                                 return Err(e.into());
                             }
@@ -1731,13 +1805,13 @@ impl Rtc {
 
                         // Run again since this would feed the DTLS subsystem
                         // to produce a packet now.
-                        return self.do_poll_output();
+                        return Ok(None);
                     }
                 }
                 SctpEvent::Open { id, label } => {
                     self.chan.ensure_channel_id_for(id);
                     let id = self.chan.channel_id_by_stream_id(id).unwrap();
-                    return Ok(Output::Event(Event::ChannelOpen(id, label)));
+                    return Ok(Some(Output::Event(Event::ChannelOpen(id, label))));
                 }
                 SctpEvent::Close {
                     id: stream_id,
@@ -1750,7 +1824,7 @@ impl Rtc {
                     // When a reset is outstanding, remove_channel holds the stream id
                     // back from reallocation until the handshake completes.
                     self.chan.remove_channel(channel_id, reset_pending);
-                    return Ok(Output::Event(Event::ChannelClose(channel_id)));
+                    return Ok(Some(Output::Event(Event::ChannelClose(channel_id))));
                 }
                 SctpEvent::StreamResetComplete { id } => {
                     // The reset handshake completed, the stream id can be used again.
@@ -1760,7 +1834,7 @@ impl Rtc {
                 SctpEvent::AssociationLost => {
                     self.chan.association_lost();
                     self.start_close()?;
-                    return Ok(Output::Event(Event::Closed));
+                    return Ok(Some(Output::Event(Event::Closed)));
                 }
                 SctpEvent::Data { id, binary, data } => {
                     let Some(id) = self.chan.channel_id_by_stream_id(id) else {
@@ -1768,37 +1842,37 @@ impl Rtc {
                         continue;
                     };
                     let cd = ChannelData { id, binary, data };
-                    return Ok(Output::Event(Event::ChannelData(cd)));
+                    return Ok(Some(Output::Event(Event::ChannelData(cd))));
                 }
                 SctpEvent::BufferedAmountLow { id } => {
                     let Some(id) = self.chan.channel_id_by_stream_id(id) else {
                         warn!("Drop BufferedAmountLow for id: {:?}", id);
                         continue;
                     };
-                    return Ok(Output::Event(Event::ChannelBufferedAmountLow(id)));
+                    return Ok(Some(Output::Event(Event::ChannelBufferedAmountLow(id))));
                 }
             }
         }
 
         if let Some(ev) = self.session.poll_event() {
-            return Ok(Output::Event(ev));
+            return Ok(Some(Output::Event(ev)));
         }
 
         // Some polling needs to bubble up errors.
-        if let Some(ev) = self.session.poll_event_fallible()? {
-            return Ok(Output::Event(ev));
+        if let Some(ev) = self.session.poll_event_fallible(self.last_now)? {
+            return Ok(Some(Output::Event(ev)));
         }
 
         if let Some(e) = self.stats.as_mut().and_then(|s| s.poll_output()) {
-            return Ok(match e {
+            return Ok(Some(match e {
                 StatsEvent::Peer(s) => Output::Event(Event::PeerStats(s)),
                 StatsEvent::MediaIngress(s) => Output::Event(Event::MediaIngressStats(s)),
                 StatsEvent::MediaEgress(s) => Output::Event(Event::MediaEgressStats(s)),
-            });
+            }));
         }
 
         if let Some(v) = self.ice.poll_transmit() {
-            return Ok(Output::Transmit(v));
+            return Ok(Some(Output::Transmit(v)));
         }
 
         if let Some(send) = &self.send_addr {
@@ -1814,43 +1888,43 @@ impl Rtc {
                     destination: send.destination,
                     contents,
                 };
-                return Ok(Output::Transmit(t));
+                return Ok(Some(Output::Transmit(t)));
             }
         } else {
             // Don't allow accumulated feedback to build up indefinitely
             self.session.clear_feedback();
         }
 
-        let stats_timeout = self.stats.as_mut().and_then(|s| s.poll_timeout());
+        self.readiness.clear_events();
 
-        let time_and_reason = (None, Reason::NotHappening)
-            .soonest((self.next_dtls_timeout, Reason::DTLS))
-            .soonest((self.ice.poll_timeout(), Reason::Ice))
-            .soonest(self.session.poll_timeout())
-            .soonest((self.sctp.poll_timeout(), Reason::Sctp))
-            .soonest((self.chan.poll_timeout(&self.sctp), Reason::Channel))
-            .soonest((stats_timeout, Reason::Stats));
+        Ok(Some(Output::Timeout(self.poll_timeout())))
+    }
 
-        // trace!("poll_output timeout reason: {}", time_and_reason.1);
+    // Called only after the output pipeline has drained.
+    fn poll_timeout(&mut self) -> Instant {
+        if self.readiness.wants_timeout() {
+            let stats_timeout = self.stats.as_mut().and_then(|s| s.poll_timeout());
+            let time_and_reason = (None, Reason::NotHappening)
+                .soonest((self.next_dtls_timeout, Reason::DTLS))
+                .soonest((self.ice.poll_timeout(), Reason::Ice))
+                .soonest(self.session.poll_timeout())
+                .soonest((self.sctp.poll_timeout(), Reason::Sctp))
+                .soonest((self.chan.poll_timeout(&self.sctp), Reason::Channel))
+                .soonest((stats_timeout, Reason::Stats));
 
-        let time = time_and_reason.0.unwrap_or_else(not_happening);
-        let reason = time_and_reason.1;
-
-        // We want to guarantee time doesn't go backwards.
-        let next = if time < self.last_now {
-            self.last_now
-        } else {
-            time
-        };
+            let time = time_and_reason.0.unwrap_or_else(not_happening);
+            self.cached_timeout = time.max(self.last_now);
+            self.last_timeout_reason = time_and_reason.1;
+            self.readiness.clear_timeout();
+        }
 
         if self.state == RtcState::Closing && self.close_drain_complete() {
             self.state = RtcState::Closed;
             self.last_timeout_reason = Reason::NotHappening;
-            return Ok(Output::Timeout(not_happening()));
+            return not_happening();
         }
 
-        self.last_timeout_reason = reason;
-        Ok(Output::Timeout(next))
+        self.cached_timeout
     }
 
     /// The reason for the last [`Output::Timeout`]
@@ -1961,6 +2035,7 @@ impl Rtc {
             return Ok(());
         }
 
+        // The handlers below each arm their own `Wake`; nothing to do here.
         match input {
             Input::Timeout(now) => self.do_handle_timeout(now)?,
             Input::Receive(recv_time, r) => {
@@ -1986,6 +2061,10 @@ impl Rtc {
         if self.state == RtcState::Closed {
             return Ok(());
         }
+
+        // Closing queues RTCP BYE and a DTLS close_notify that must be drained
+        // from the pipeline, so re-poll the whole tree.
+        self.wake_all();
 
         if self.state != RtcState::Closing {
             self.session.close_rtp();
@@ -2031,31 +2110,55 @@ impl Rtc {
         }
 
         self.last_now = now;
-        self.ice.handle_timeout(now);
-        self.sctp.handle_timeout(now);
-        self.chan.handle_timeout(now, &mut self.sctp);
-        self.session.handle_timeout(now)?;
 
-        if let Some(stats) = &mut self.stats {
+        // Disjoint borrows so each subsystem gets its own armed `Wake` and
+        // makes its own re-poll decision; the guards fold into `readiness`
+        // independently as each statement ends.
+        let Rtc {
+            ice,
+            sctp,
+            chan,
+            session,
+            stats,
+            send_addr,
+            peer_bytes_rx,
+            peer_bytes_tx,
+            readiness,
+            ..
+        } = self;
+
+        // ICE is an external crate and can't be handed a `Wake`. Driving it can
+        // transmit and re-arm timers, so arm both on its behalf at the boundary.
+        ice.handle_timeout(now);
+        drop(readiness.wake());
+
+        sctp.handle_timeout(now, &mut readiness.wake());
+        chan.handle_timeout(now, sctp, &mut readiness.wake());
+        session.handle_timeout(now, &mut readiness.wake())?;
+
+        if let Some(stats) = stats {
             if stats.wants_timeout(now) {
                 let mut snapshot = StatsSnapshot::new(now);
-                snapshot.peer_rx = self.peer_bytes_rx;
-                snapshot.peer_tx = self.peer_bytes_tx;
-                let current_round_trip_time = self.ice.nominated_pair_rtt();
-                let total_round_trip_time = self.ice.nominated_pair_total_rtt().unwrap_or_default();
-                let responses_received = self.ice.nominated_pair_responses_received().unwrap_or(0);
-                snapshot.selected_candidate_pair =
-                    self.send_addr.as_ref().map(|s| CandidatePairStats {
-                        protocol: s.proto,
-                        local: CandidateStats { addr: s.source },
-                        remote: CandidateStats {
-                            addr: s.destination,
-                        },
-                        current_round_trip_time,
-                        total_round_trip_time,
-                        responses_received,
-                    });
-                self.session.visit_stats(now, &mut snapshot);
+                snapshot.peer_rx = *peer_bytes_rx;
+                snapshot.peer_tx = *peer_bytes_tx;
+                let current_round_trip_time = ice.nominated_pair_rtt();
+                let total_round_trip_time = ice.nominated_pair_total_rtt().unwrap_or_default();
+                let responses_received = ice.nominated_pair_responses_received().unwrap_or(0);
+                snapshot.selected_candidate_pair = send_addr.as_ref().map(|s| CandidatePairStats {
+                    protocol: s.proto,
+                    local: CandidateStats { addr: s.source },
+                    remote: CandidateStats {
+                        addr: s.destination,
+                    },
+                    current_round_trip_time,
+                    total_round_trip_time,
+                    responses_received,
+                });
+                session.visit_stats(now, &mut snapshot);
+
+                // A stats snapshot surfaces as an event and re-arms the stats
+                // timer.
+                drop(readiness.wake());
                 stats.do_handle_timeout(&mut snapshot);
             }
         }
@@ -2075,6 +2178,15 @@ impl Rtc {
 
         self.peer_bytes_rx += bytes_rx as u64;
 
+        // Disjoint borrows so each subsystem gets its own armed `Wake`.
+        let Rtc {
+            ice,
+            dtls,
+            session,
+            readiness,
+            ..
+        } = self;
+
         match r.contents.inner {
             Stun(stun) => {
                 let packet = is::stun::StunPacket {
@@ -2083,11 +2195,17 @@ impl Rtc {
                     destination: r.destination,
                     message: stun,
                 };
-                self.ice.handle_packet(recv_time, packet);
+                // ICE is an external crate; arm both on its behalf.
+                ice.handle_packet(recv_time, packet);
+                drop(readiness.wake());
             }
-            Dtls(dtls) => self.dtls.handle_receive(dtls)?,
-            Rtp(rtp) => self.session.handle_rtp_receive(recv_time, rtp),
-            Rtcp(rtcp) => self.session.handle_rtcp_receive(recv_time, rtcp),
+            Dtls(dtls_packet) => {
+                // A failed receive can still change DTLS state and timers.
+                let _wake = readiness.wake();
+                dtls.handle_receive(dtls_packet)?;
+            }
+            Rtp(rtp) => session.handle_rtp_receive(recv_time, rtp, &mut readiness.wake()),
+            Rtcp(rtcp) => session.handle_rtcp_receive(recv_time, rtcp, &mut readiness.wake()),
         }
 
         Ok(())
@@ -2127,7 +2245,7 @@ impl Rtc {
     ///
     /// Only relevant if BWE was enabled in the [`RtcConfig::enable_bwe()`]
     pub fn bwe(&mut self) -> Bwe {
-        Bwe(self)
+        Bwe::new(self)
     }
 
     fn is_correct_change_id(&self, change_id: usize) -> bool {
@@ -2237,7 +2355,7 @@ mod test {
     #[test]
     fn event_is_reasonably_sized() {
         let n = std::mem::size_of::<Event>();
-        assert!(n < 490); // Increased to accommodate abs-capture-time fields in ExtensionValues
+        assert!(n < 530);
     }
 }
 
@@ -2254,7 +2372,7 @@ pub mod unversioned {
     //! To use this module, enable the `unversioned` feature flag in your Cargo.toml.
 
     pub use super::packet::{
-        Depacketizer, H264Depacketizer, H264Packetizer, OpusPacketizer, Packetizer,
+        Depacketizer, H264Depacketizer, H264Packetizer, OpusPacketizer, Packetizer, TelephoneEvent,
         Vp8Depacketizer, Vp8Packetizer,
     };
 }

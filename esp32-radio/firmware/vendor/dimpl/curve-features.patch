@@ -1,0 +1,33 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -180,16 +180,28 @@ default-features = false
+ [dependencies.once_cell]
+ version = "1.21.3"
+ 
+-[dependencies.p256]
++[target.'cfg(not(target_os = "espidf"))'.dependencies.p256]
+ version = "0.14"
+ features = ["ecdh"]
+ optional = true
+ 
+-[dependencies.p384]
++[target.'cfg(target_os = "espidf")'.dependencies.p256]
++version = "0.14"
++default-features = false
++features = ["ecdh", "ecdsa", "pem", "std"]
++optional = true
++
++[target.'cfg(not(target_os = "espidf"))'.dependencies.p384]
+ version = "0.14"
+ features = ["ecdh"]
+ optional = true
+ 
++[target.'cfg(target_os = "espidf")'.dependencies.p384]
++version = "0.14"
++default-features = false
++features = ["ecdh", "ecdsa", "pem", "std"]
++optional = true
++
+ [dependencies.pkcs8]
+ version = "0.11"
+ features = ["pem"]

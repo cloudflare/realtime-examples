@@ -46,9 +46,9 @@ must use checked-in code and supported fixtures rather than local experiments.
 
 ## Checks and adaptations
 
-Use the [README check commands](README.md#development) with Node 24 and Rust
-1.88.0; [blueprint.yaml](blueprint.yaml) declares the full suite. Repeat affected
-checks when a change or failure justifies it.
+Use the [README check commands](README.md#development) with the Node and host
+Rust versions pinned in [blueprint.yaml](blueprint.yaml). Repeat affected checks
+when a change or failure justifies it.
 
 Hardware, transport, crypto, or ABI changes require the build/live checks in
 firmware/AGENTS.md. Describe interruptions before resetting or flashing the

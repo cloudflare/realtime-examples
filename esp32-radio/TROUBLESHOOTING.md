@@ -8,6 +8,7 @@ owner and protocol for each stage.
 | Symptom | Check and next action |
 | --- | --- |
 | Firmware setup rejects the host | `make setup-firmware` supports Linux x86_64. Use the documented build host and prerequisites; host tests on another OS do not establish firmware-toolchain support. |
+| Firmware setup reports an ESP-IDF revision mismatch after updating | From `esp32-radio/`, run `export RADIO_SDK_ROOT="$PWD/.tools/sdk-5.5.6"` and rerun `make setup-firmware`. Keep that variable set for the build; the helper leaves the older checkout intact. |
 | Board does not boot or flash layout is rejected | Confirm ESP32-S3-DevKitC-1 N32R16V, native USB, octal flash/PSRAM settings and the saved backup. Read [memory and music compatibility](ERRATA.md) before changing the partition table. |
 | `clang-format` missing or wrong version | Run `make setup-c-format` from `esp32-radio/`; the pinned formatter lives under `.tools/` independently of the full SDK. |
 | Worker build cannot find credentials | If private files exist, fill the four Worker values in `.credential.env` and run `make secrets`. A clean checkout with no private files can run the host/build tests using synthetic bindings. Do not copy a private `.dev.vars` to browser assets. |
@@ -16,7 +17,7 @@ owner and protocol for each stage.
 | Viewer API returns 401 | Enter the viewer password. After rotation or cookie expiry, authenticate again. Device requests instead require the configured device bearer token. |
 | Viewer operation returns 403 | Check that the request belongs to that viewer and satisfies origin policy. Viewer IDs do not replace their per-viewer tokens. A repeated leave after successful cleanup may also return 403. |
 | Device generation changed / viewer gets 409 | A publisher was replaced or became unavailable. Wait for the board to be online, then select **Start listening**. Do not reuse an old generation or viewer token. |
-| Signaling succeeds but WebRTC will not connect | Check outbound IPv4 UDP on the board's network and browser network. This firmware implements no TURN/TCP fallback. Check the board's filtered connection logs without printing SDP. |
+| Signaling succeeds but WebRTC will not connect | Check outbound IPv4 UDP; there is no TURN/TCP fallback. If the board times out after receiving an answer, confirm its firmware includes the [ICE candidate parsing fix](ERRATA.md#ice-candidate-parsing). Use filtered connection logs rather than printing SDP. |
 | Channels never open | Confirm stream 0 bootstrap and the actual SFU-returned IDs on each endpoint. Check `robot`/`spectrum` profiles and the browser's `waitForAck` acknowledgment. Never substitute the publisher's IDs for the subscriber's. |
 | Audio connected but inaudible | Select **Enable sound** if shown, check local mute/volume and device output, then inspect receiver statistics. Shared pause sends silence; local mute does not pause the board. |
 | Spectrum or metadata looks stale | Check publisher generation and playback revision, channel receipt, and analysis freshness. Preserve the [music/protocol compatibility rules](ERRATA.md#music-pack-compatibility). |

@@ -3,6 +3,7 @@ use crate::chunk::chunk_payload_data::{ChunkPayloadData, PayloadProtocolIdentifi
 use crate::error::{Error, Result};
 use crate::util::*;
 
+use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use bytes::{Bytes, BytesMut};
 use core::cmp::Ordering;
@@ -200,8 +201,8 @@ pub(crate) struct ReassemblyQueue {
     pub(crate) si: StreamId,
     pub(crate) next_ssn: u16,
     /// expected SSN for next ordered chunk
-    pub(crate) ordered: Vec<Chunks>,
-    pub(crate) unordered: Vec<Chunks>,
+    pub(crate) ordered: VecDeque<Chunks>,
+    pub(crate) unordered: VecDeque<Chunks>,
     pub(crate) unordered_chunks: Vec<ChunkPayloadData>,
     pub(crate) n_bytes: usize,
     pub(crate) max_message_size: u32,
@@ -217,8 +218,8 @@ impl ReassemblyQueue {
         ReassemblyQueue {
             si,
             next_ssn: 0, // From RFC 4960 Sec 6.5:
-            ordered: vec![],
-            unordered: vec![],
+            ordered: VecDeque::new(),
+            unordered: VecDeque::new(),
             unordered_chunks: vec![],
             n_bytes: 0,
             max_message_size,
@@ -255,7 +256,7 @@ impl ReassemblyQueue {
             // Scan unordered_chunks that are contiguous (in TSN)
             // If found, append the complete set to the unordered array
             if let Some(cset) = self.find_complete_unordered_chunk_set() {
-                self.unordered.push(cset);
+                self.unordered.push_back(cset);
                 return Ok(true);
             }
 
@@ -285,9 +286,9 @@ impl ReassemblyQueue {
             let mut cset = Chunks::new(chunk.stream_sequence_number, chunk.payload_type, vec![]);
             let unordered = chunk.unordered;
             let ok = cset.push(chunk);
-            self.ordered.push(cset);
+            self.ordered.push_back(cset);
             if !unordered {
-                sort_chunks_by_ssn(&mut self.ordered);
+                sort_chunks_by_ssn(self.ordered.make_contiguous());
             }
 
             Ok(ok)
@@ -440,7 +441,7 @@ impl ReassemblyQueue {
     pub(crate) fn read(&mut self) -> Option<Chunks> {
         // Check unordered first
         let chunks = if !self.unordered.is_empty() {
-            self.unordered.remove(0)
+            self.unordered.pop_front()?
         } else if !self.ordered.is_empty() {
             // Now, check ordered
             let chunks = &self.ordered[0];
@@ -453,7 +454,7 @@ impl ReassemblyQueue {
             if chunks.ssn == self.next_ssn {
                 self.next_ssn = self.next_ssn.wrapping_add(1);
             }
-            self.ordered.remove(0)
+            self.ordered.pop_front()?
         } else {
             return None;
         };

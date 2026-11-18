@@ -1,7 +1,7 @@
 # SCTP receive budgets and packet allocation
 
-Source: crates.io `sctp-proto` **0.10.4**, upstream revision
-`215565ad7aa80d3c160048350a2e6ddd8524920c` from
+Source: crates.io `sctp-proto` **0.10.8**, upstream revision
+`da1ac299d949c17680bc8070f334010ab91d5b1c` from
 [algesten/sctp-proto](https://github.com/algesten/sctp-proto).
 `LICENSE-MIT` and `LICENSE-APACHE` preserve the upstream notices.
 `Cargo.toml.orig` is the published original manifest; `transport.patch` records
@@ -32,7 +32,8 @@ path, releasing streams and emitting `AssociationLost`. A missing fragment that
 would exceed the hard budget also closes the association; this intentionally
 limits resources instead of allowing ordinary SCTP window overrun. Lost or
 reordered packets within the budget retain normal delivery and credit recovery.
-Callers reconnect after terminal closure.
+Upstream also closes an association at zero credit when it has no TSN gap or
+readable message that could free space. Callers reconnect after terminal closure.
 
 These are bounds on retained DATA state, not all SCTP heap usage. Allocator and
 container overhead, the current input packet, control/reset metadata and buffers
@@ -54,8 +55,8 @@ workspace lockfile.
 From the `esp32-radio/` directory:
 
 ```sh
-cargo +1.88.0 test --manifest-path firmware/vendor/sctp-proto/Cargo.toml \
-  --locked --lib --target-dir artifacts/vendor-tests
+cargo +1.100.0 test --manifest-path firmware/vendor/sctp-proto/Cargo.toml \
+  --locked --tests --target-dir artifacts/vendor-tests
 ```
 
 Keep this crate excluded from firmware workspace membership. On upgrades,

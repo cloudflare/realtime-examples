@@ -10,6 +10,7 @@ pub(crate) mod param_random;
 pub(crate) mod param_reconfig_response;
 pub(crate) mod param_requested_hmac_algorithm;
 pub(crate) mod param_state_cookie;
+pub(crate) mod param_supported_address_types;
 pub(crate) mod param_supported_extensions;
 pub(crate) mod param_type;
 pub(crate) mod param_uknown;
@@ -23,6 +24,7 @@ use crate::param::param_random::ParamRandom;
 use crate::param::param_reconfig_response::ParamReconfigResponse;
 use crate::param::param_requested_hmac_algorithm::ParamRequestedHmacAlgorithm;
 use crate::param::param_state_cookie::ParamStateCookie;
+use crate::param::param_supported_address_types::ParamSupportedAddressTypes;
 use crate::param::param_supported_extensions::ParamSupportedExtensions;
 use param_header::*;
 use param_type::*;
@@ -71,6 +73,9 @@ pub(crate) fn build_param(raw_param: &Bytes) -> Result<Box<dyn Param + Send + Sy
         ParamType::ReqHmacAlgo => Ok(Box::new(ParamRequestedHmacAlgorithm::unmarshal(raw_param)?)),
         ParamType::ChunkList => Ok(Box::new(ParamChunkList::unmarshal(raw_param)?)),
         ParamType::StateCookie => Ok(Box::new(ParamStateCookie::unmarshal(raw_param)?)),
+        ParamType::SupportedAddrTypes => {
+            Ok(Box::new(ParamSupportedAddressTypes::unmarshal(raw_param)?))
+        }
         ParamType::HeartbeatInfo => Ok(Box::new(ParamHeartbeatInfo::unmarshal(raw_param)?)),
         ParamType::OutSsnResetReq => Ok(Box::new(ParamOutgoingResetRequest::unmarshal(raw_param)?)),
         ParamType::ReconfigResp => Ok(Box::new(ParamReconfigResponse::unmarshal(raw_param)?)),

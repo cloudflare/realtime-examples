@@ -2,7 +2,7 @@ use str0m_proto::crypto as provider;
 
 pub use provider::{AeadAes128Gcm, AeadAes128GcmCipher, AeadAes256Gcm, AeadAes256GcmCipher};
 pub use provider::{Aes128CmSha1_80, Aes128CmSha1_80Cipher, CryptoProvider, CryptoSafe};
-pub use provider::{Sha1HmacProvider, Sha256Provider};
+pub use provider::{Sha1HmacProvider, Sha1Provider, Sha256Provider};
 pub use provider::{SrtpProvider, SupportedAeadAes128Gcm};
 pub use provider::{SupportedAeadAes256Gcm, SupportedAes128CmSha1_80};
 
@@ -47,16 +47,13 @@ pub fn from_feature_flags() -> CryptoProvider {
     #[cfg(all(feature = "apple-crypto", target_vendor = "apple"))]
     return str0m_apple_crypto::default_provider();
 
-    #[cfg(all(
-        any(feature = "wincrypto", feature = "wincrypto-dimpl"),
-        target_os = "windows"
-    ))]
+    #[cfg(all(feature = "wincrypto", target_os = "windows"))]
     return str0m_wincrypto::default_provider();
 
     panic!(
         "No crypto provider available. Enable one of: aws-lc-rs, 
-             rust-crypto, openssl, openssl-dimpl, wincrypto (Windows only), 
-             wincrypto-dimpl (Windows only) or use str0m-apple-crypto crate"
+             rust-crypto, openssl, openssl-dimpl, wincrypto (Windows only)
+             or use str0m-apple-crypto crate"
     );
 }
 

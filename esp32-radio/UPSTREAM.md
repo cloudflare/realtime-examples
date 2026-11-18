@@ -11,6 +11,11 @@ request-level SFU errors unresolved during cleanup and controller revocation,
 matches item-level absence to requested resources, and bounds diagnostic codes.
 See the [integration notes](ERRATA.md#worker-session-cleanup-and-leases).
 
+The example also adopts the [firmware and Worker dependency update](https://github.com/zllovesuki/esp32-radio/commit/eb5fa16f902accbf3de1438ef82430ed2693d2ef)
+and the [ICE candidate parsing fix](https://github.com/zllovesuki/esp32-radio/commit/a99df367ba817cdca4bf105997cdd0f98d7187da).
+The vendored str0m 0.25.0 accepts either order of `ufrag` and `generation` in
+an SDP answer. The upstream per-song bitrate option is not part of this import.
+
 First-party application files use the [MIT license](LICENSE).
 Third-party code, fonts, fixtures, and downloaded dependencies retain their
 original licenses; see

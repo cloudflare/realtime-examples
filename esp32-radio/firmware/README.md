@@ -50,7 +50,7 @@ compiles that code, and device checks validate its runtime behavior.
 ### Task ownership
 
 The radio task exclusively owns the peer, LED, playlist position and counters.
-It runs on core 0 at priority 5 with a 48 KiB internal stack. The signaling task
+It runs on core 0 at priority 5 with a 64 KiB internal stack. The signaling task
 owns its blocking HTTPS client and a 16 KiB stack; it can run on either core.
 They exchange typed requests and events through bounded channels. Each request
 includes a separate channel for its acknowledgment.
@@ -105,6 +105,8 @@ Startup checks cover GCM authentication failure, key derivation, multipart HMAC,
 and SHA snapshots. dimpl also runs its configured provider validation. The small
 [provider patch](vendor/str0m-rust-crypto/PATCH.md) supports application-supplied
 certificates and crypto selection without enabling the AWS-LC generator.
+On ESP-IDF, the [dimpl manifest patch](vendor/dimpl/PATCH.md) omits precomputed
+curve tables so internal RAM remains available for task stacks.
 
 ### Data channels
 
@@ -219,7 +221,7 @@ wrappers.
 
 C and header formatting follows [.clang-format](.clang-format) and covers
 `platform/`. For editor formatting, use `.tools/clang-format/bin/clang-format`
-from `esp32-radio/`; `make fmt-c` and CI use the same pinned 23.1.1
+from `esp32-radio/`; `make fmt-c` and CI use the same pinned 23.1.5
 executable.
 
 The helper uses `RADIO_SDK_ROOT` or a local SDK under `.tools/`. Output goes to

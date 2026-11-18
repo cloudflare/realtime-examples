@@ -1,6 +1,6 @@
 #![allow(clippy::single_match)]
 
-use combine::EasyParser;
+use combine::{EasyParser, Parser};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::{self};
@@ -28,6 +28,12 @@ pub struct Sdp {
 
 impl Sdp {
     pub(crate) fn parse(input: &str) -> Result<Sdp, SdpError> {
+        // `easy_parse` builds (allocates, merges, dedups) an error for every alternative tried,
+        // which is most of the cost of parsing a valid SDP. Plain `&str` errors cost nothing; the
+        // detailed message is only needed when the input is invalid, so parse again for it then.
+        if let Ok((sdp, _)) = sdp_parser().parse(input) {
+            return Ok(sdp);
+        }
         sdp_parser()
             .easy_parse(input)
             .map(|(sdp, _)| sdp)
@@ -101,6 +107,21 @@ impl Sdp {
         //    for PT 96 in one m-line it must be in all m-lines.
         // 2. Compare with previous m-lines that remote isn't narrowing/expanding PT and/or extmaps.
 
+        for media in &self.media_lines {
+            if let Some(error) = media.check_consistent() {
+                return Some(error);
+            }
+        }
+
+        // SDP typically has few m-lines, so a pairwise scan avoids allocation and hashing
+        // for a small number of comparisons (at most 45 for 10 m-lines).
+        for (i, media) in self.media_lines.iter().enumerate() {
+            let mid = media.mid();
+            if self.media_lines.iter().skip(i + 1).any(|m| m.mid() == mid) {
+                return Some(format!("Mid {mid} is used by more than one m-line"));
+            }
+        }
+
         let group = self
             .session
             .attrs
@@ -108,15 +129,31 @@ impl Sdp {
             .find(|a| matches!(a, SessionAttribute::Group { .. }));
 
         if let Some(SessionAttribute::Group { mids, .. }) = group {
-            if !mids.len() == self.media_lines.len() {
+            // For str0m's single BUNDLE transport, expect participating m-lines in
+            // media-section order, as libwebrtc generates offers and answers in
+            // pc/media_session.cc, omitting rejected sections from the group.
+            // This ordering is a deliberate interoperability constraint, stricter
+            // than RFC 9143 section 5, which permits BUNDLE MID order to differ
+            // from media-section order. Rejecting a section does not remove its
+            // m-line from the SDP or change the positions of the remaining m-lines.
+            // Port 0 outside BUNDLE means rejected; inside BUNDLE it can be bundle-only.
+            let media_lines = self
+                .media_lines
+                .iter()
+                .filter(|m| !m.disabled || mids.contains(&m.mid()));
+            // This clones only the iterator state: a slice cursor and a filter closure
+            // borrowing `mids`. It does not clone any MediaLine, its attributes, or the
+            // backing Vec, and it allocates nothing. Counting consumes the cloned
+            // iterator so the original remains available for the order check below.
+            let media_count = media_lines.clone().count();
+            if mids.len() != media_count {
                 return Some(format!(
                     "a=group mid count doesn't match m-line count {} != {}",
                     mids.len(),
-                    self.media_lines.len()
+                    media_count
                 ));
             }
-            for (media, mid) in self.media_lines.iter().zip(mids.iter()) {
-                media.check_consistent()?;
+            for (media, mid) in media_lines.zip(mids.iter()) {
                 let m = media.mid();
                 if m != *mid {
                     return Some(format!("Mid order not matching a=group {m} != {mid}"));
@@ -182,12 +219,14 @@ impl Session {
     }
 
     pub fn fingerprint(&self) -> Option<Fingerprint> {
-        for a in &self.attrs {
-            if let SessionAttribute::Fingerprint(v) = a {
-                return Some(v.clone());
-            }
-        }
-        None
+        self.attrs
+            .iter()
+            .filter_map(|a| match a {
+                SessionAttribute::Fingerprint(v) => Some(v),
+                _ => None,
+            })
+            .min_by_key(|v| v.hash_preference())
+            .cloned()
     }
 
     pub fn ice_lite(&self) -> bool {
@@ -361,19 +400,28 @@ impl MediaLine {
 
         let mut params: Vec<_> = rtp_maps
             .iter()
-            .filter(|(_, c)| c.codec.is_audio() | c.codec.is_video())
-            .map(|(pt, c)| PayloadParams::new(*pt, None, (*c).into()))
+            .filter(|(pt, c)| {
+                c.codec.is_audio()
+                    || c.codec.is_video()
+                    || (c.codec.is_tele() && self.pts.contains(pt))
+            })
+            .filter_map(|(pt, c)| {
+                let mut p = PayloadParams::new(*pt, None, (*c).into());
+                p.spec.format = FormatParams::from_sdp_fmtp(
+                    c.codec,
+                    fmtps
+                        .iter()
+                        .filter(|(fmtp_pt, _)| **fmtp_pt == *pt)
+                        .map(|(_, values)| values.as_slice()),
+                )?;
+                // Remote TWCC feedback is supported only when explicitly advertised.
+                p.set_fb_transport_cc(false);
+                Some(p)
+            })
             .collect();
 
         for p in &mut params {
             for (pt, values) in fmtps.iter() {
-                // find matching a=fmtp line, if it exists.
-                if **pt == p.pt {
-                    for param in values.iter() {
-                        p.spec.format.set_param(param);
-                    }
-                }
-
                 // find resend pt, if there is one.
                 for fp in values.iter() {
                     if let FormatParam::Apt(v) = fp {
@@ -385,6 +433,23 @@ impl MediaLine {
                             if is_rtx {
                                 p.resend = Some(**pt);
                             }
+                        }
+                    }
+                }
+            }
+
+            for (pt, values) in fmtps.iter() {
+                // A slash-separated PT list is RED only when its rtpmap says RED.
+                let is_red = rtp_maps
+                    .iter()
+                    .any(|(cpt, c)| cpt == *pt && c.codec == Codec::Red);
+                if !is_red || !p.spec.codec.is_audio() {
+                    continue;
+                }
+                for fp in values.iter() {
+                    if let FormatParam::BarePtList(primary) | FormatParam::Red(primary) = fp {
+                        if *primary == p.pt {
+                            p.red = Some(**pt);
                         }
                     }
                 }
@@ -457,7 +522,7 @@ impl MediaLine {
             ));
         }
 
-        if self.proto == Proto::Srtp && self.pts.is_empty() {
+        if self.proto == Proto::Srtp && self.pts.is_empty() && !self.disabled {
             return Some(format!("Expected at least one PT for mid: {}", self.mid()));
         }
 
@@ -482,6 +547,27 @@ impl MediaLine {
                     m,
                     self.mid()
                 ));
+            }
+        }
+
+        // An RTX PT must identify only one primary PT, including across multiple fmtp lines.
+        let mut rtx_apts = HashMap::new();
+        for attr in &self.attrs {
+            let Fmtp { pt, values } = attr else {
+                continue;
+            };
+            for value in values {
+                let FormatParam::Apt(apt) = value else {
+                    continue;
+                };
+                if let Some(previous) = rtx_apts.insert(*pt, *apt) {
+                    if previous != *apt {
+                        return Some(format!(
+                            "PT {pt} has conflicting apt values {previous} and {apt} for mid: {}",
+                            self.mid()
+                        ));
+                    }
+                }
             }
         }
         None
@@ -522,12 +608,14 @@ impl MediaLine {
         })
     }
     pub fn fingerprint(&self) -> Option<Fingerprint> {
-        for a in &self.attrs {
-            if let MediaAttribute::Fingerprint(v) = a {
-                return Some(v.clone());
-            }
-        }
-        None
+        self.attrs
+            .iter()
+            .filter_map(|a| match a {
+                MediaAttribute::Fingerprint(v) => Some(v),
+                _ => None,
+            })
+            .min_by_key(|v| v.hash_preference())
+            .cloned()
     }
 
     /// This hoovers the ice candidates from all m-lines, lots of dupes.
@@ -629,9 +717,11 @@ impl MediaLine {
                             let mut iter = value.split(' ');
 
                             fn trim_and_no_minus(s: &str) -> Option<String> {
-                                let s = s.trim();
-
-                                if s == "-" { None } else { Some(s.into()) }
+                                if is_no_stream(s) {
+                                    None
+                                } else {
+                                    Some(s.trim().into())
+                                }
                             }
 
                             if let Some(stream_id) = iter.next() {
@@ -982,17 +1072,56 @@ pub enum FormatParam {
     /// out-of-order NAL unit decoding. Valid range: 0–32767.
     SpropMaxDonDiff(u16),
 
+    /// Highest event code in an inclusive `0-X` telephone-event range.
+    TelephoneEvents(u8),
+
+    /// Bare `0-X` fmtp syntax, interpreted only with a telephone-event rtpmap.
+    BareRange(u8),
+
+    /// Bare slash-separated payload list, interpreted only with a RED rtpmap.
+    BarePtList(Pt),
+
+    /// AMR-WB octet-aligned (`1`) or bandwidth-efficient (`0`, default) payloads.
+    OctetAlign(bool),
+
+    /// AMR-WB allowed speech modes as a bitmask.
+    ModeSet(u16),
+
+    /// An AMR-WB parameter that needs a feature str0m lacks, such as `crc=1`.
+    /// Declines the payload type.
+    AmrWbUnsupported,
+
     /// RTX (resend) codecs, which PT it concerns.
     Apt(Pt),
+
+    /// RFC 2198 RED redundancy. Carries the primary PT this RED stream wraps
+    /// (the first entry of the `<primary>/<redundant>...` fmtp payload-type list).
+    Red(Pt),
 
     /// Unrecognized fmtp.
     Unknown,
 }
 
+fn parse_amr_wb_mode_set(value: &str) -> Option<u16> {
+    value.split(',').try_fold(0u16, |mask, mode| {
+        let mode: u8 = mode.trim().parse().ok()?;
+        (mode <= 8).then(|| mask | (1 << mode))
+    })
+}
+
 impl FormatParam {
+    pub(crate) fn parse_telephone_events(value: &str) -> Self {
+        value
+            .strip_prefix("0-")
+            .filter(|end| end.bytes().all(|b| b.is_ascii_digit()))
+            .and_then(|end| end.parse::<u8>().ok())
+            .map(Self::TelephoneEvents)
+            .unwrap_or(Self::Unknown)
+    }
+
     pub fn parse(k: &str, v: &str) -> Self {
         use FormatParam::*;
-        match k {
+        match k.to_ascii_lowercase().as_str() {
             "minptime" => v.parse().map(MinPTime).ok(),
             "useinbandfec" => Some(UseInbandFec(v == "1")),
             "usedtx" => Some(UseDtx(v == "1")),
@@ -1013,6 +1142,11 @@ impl FormatParam {
                 .ok()
                 .filter(|&v| v <= 32767)
                 .map(SpropMaxDonDiff),
+            "octet-align" => Some(OctetAlign(v == "1")),
+            "mode-set" => parse_amr_wb_mode_set(v).map(ModeSet),
+            "crc" | "robust-sorting" if v == "1" => Some(AmrWbUnsupported),
+            "mode-change-period" if v == "2" => Some(AmrWbUnsupported),
+            "interleaving" => Some(AmrWbUnsupported),
             "apt" => v.parse::<u8>().map(|v| Apt(Pt::from(v))).ok(),
             _ => None,
         }
@@ -1025,7 +1159,12 @@ impl FormatParam {
     /// Parse multiple format parameters from key-value pairs.
     /// Handles the H.265/H.266 special case where three params combine into
     /// one composite ProfileTierLevel.
-    pub fn parse_pairs(pairs: Vec<(String, String)>) -> Vec<FormatParam> {
+    pub fn parse_pairs(mut pairs: Vec<(String, String)>) -> Vec<FormatParam> {
+        // Parameter names are case-insensitive (RFC 4855 §3).
+        for (k, _) in &mut pairs {
+            k.make_ascii_lowercase();
+        }
+
         // Check if this looks like H.265/H.266 by presence of tier-flag or level-id.
         // Both codecs use the same three fmtp keys (RFC 7798 / RFC 9328);
         // their level-id value spaces are disjoint (H.265: 30×level, e.g. 93;
@@ -1100,7 +1239,22 @@ impl fmt::Display for FormatParam {
                 )
             }
             SpropMaxDonDiff(v) => write!(f, "sprop-max-don-diff={}", *v),
+            TelephoneEvents(v) => write!(f, "0-{v}"),
+            BareRange(v) => write!(f, "0-{v}"),
+            BarePtList(v) => write!(f, "{v}/{v}"),
+            OctetAlign(v) => write!(f, "octet-align={}", i32::from(*v)),
+            ModeSet(mask) => {
+                write!(f, "mode-set=")?;
+                let mut separator = "";
+                for mode in (0..=8).filter(|mode| mask & (1 << mode) != 0) {
+                    write!(f, "{separator}{mode}")?;
+                    separator = ",";
+                }
+                Ok(())
+            }
+            AmrWbUnsupported => Ok(()),
             Apt(v) => write!(f, "apt={v}"),
+            Red(v) => write!(f, "{v}/{v}"),
             Unknown => Ok(()),
         }
     }
@@ -1144,7 +1298,16 @@ impl PayloadParams {
             });
         }
 
-        let fmtps = self.spec.format.to_format_param();
+        let fmtps = if self.spec.codec.is_tele() {
+            vec![FormatParam::TelephoneEvents(
+                self.spec
+                    .format
+                    .telephone_event_max
+                    .unwrap_or(FormatParams::DEFAULT_TELEPHONE_EVENT_MAX),
+            )]
+        } else {
+            self.spec.format.to_format_param()
+        };
         if !fmtps.is_empty() {
             attrs.push(MediaAttribute::Fmtp {
                 pt: self.pt,
@@ -1164,6 +1327,21 @@ impl PayloadParams {
             attrs.push(MediaAttribute::Fmtp {
                 pt,
                 values: vec![FormatParam::Apt(self.pt)],
+            });
+        }
+
+        if let Some(pt) = self.red {
+            attrs.push(MediaAttribute::RtpMap {
+                pt,
+                value: RtpMap {
+                    codec: Codec::Red,
+                    clock_rate: self.spec.rtp_clock_rate(),
+                    channels: self.spec.channels,
+                },
+            });
+            attrs.push(MediaAttribute::Fmtp {
+                pt,
+                values: vec![FormatParam::Red(self.pt)],
             });
         }
     }
@@ -1264,6 +1442,12 @@ pub struct Msid {
     pub track_id: String,
 }
 
+/// RFC 8830's "no MediaStream" sentinel: a stream or track id of `-` means the
+/// media is not associated with a MediaStream.
+pub(crate) fn is_no_stream(s: &str) -> bool {
+    s.trim() == "-"
+}
+
 impl Msid {
     pub fn random() -> Self {
         Msid {
@@ -1317,8 +1501,11 @@ impl fmt::Display for SessionAttribute {
         use SessionAttribute::*;
         match self {
             Group { typ, mids } => {
-                let mids: Vec<_> = mids.iter().map(|m| m.to_string()).collect();
-                write!(f, "a=group:{} {}\r\n", typ, mids.join(" "))?;
+                write!(f, "a=group:{typ}")?;
+                for mid in mids {
+                    write!(f, " {mid}")?;
+                }
+                write!(f, "\r\n")?;
             }
             AllowMixedExts => write!(f, "a=extmap-allow-mixed\r\n")?,
             MsidSemantic {
@@ -1360,6 +1547,8 @@ impl fmt::Display for MediaLine {
         let len = self.pts.len();
         if self.typ.is_channel() {
             write!(f, "webrtc-datachannel\r\n")?;
+        } else if self.pts.is_empty() {
+            write!(f, "0\r\n")?;
         } else {
             for (idx, m) in self.pts.iter().enumerate() {
                 if idx + 1 < len {
@@ -1571,6 +1760,195 @@ mod test {
 
     use super::*;
 
+    /// The captured Chrome offer in `docs/chrome-sdp.json`, as an SDP string.
+    fn chrome_offer() -> String {
+        let json: serde_json::Value =
+            serde_json::from_str(include_str!("../../docs/chrome-sdp.json")).unwrap();
+        let lines = json["sdp"].as_array().unwrap();
+        let sdp: String = lines
+            .iter()
+            .map(|l| format!("{}\r\n", l.as_str().unwrap()))
+            .collect();
+        sdp
+    }
+
+    #[test]
+    fn fast_and_easy_parse_agree() {
+        let input = chrome_offer();
+        let fast = Sdp::parse(&input).unwrap();
+        let (easy, _) = sdp_parser().easy_parse(input.as_str()).unwrap();
+        assert_eq!(fast, easy);
+        assert!(fast.media_lines.len() >= 2);
+    }
+
+    #[test]
+    fn invalid_sdp_keeps_the_detailed_error() {
+        let input = chrome_offer().replacen("v=0", "v=x", 1);
+        let Err(SdpError::ParseError(msg)) = Sdp::parse(&input) else {
+            panic!("a bad version line parses");
+        };
+        assert!(msg.contains("Parse error at"), "{msg}");
+    }
+
+    #[test]
+    fn fingerprint_hash_preference_at_session_and_media_level() {
+        for (hashes, expected) in [
+            (vec!["sha-1", "SHA-256"], "SHA-256"),
+            (vec!["sha-256", "SHA-1"], "sha-256"),
+            (vec!["sha-512", "SHA-1"], "SHA-1"),
+            (vec!["sha-512", "sha-256"], "sha-256"),
+            (vec!["sha-512", "md5"], "sha-512"),
+        ] {
+            for session_level in [false, true] {
+                let fingerprints = hashes
+                    .iter()
+                    .map(|hash| format!("a=fingerprint:{hash} 00:01\r\n"))
+                    .collect::<String>();
+                let header = "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n";
+                let media = "m=audio 9 UDP/TLS/RTP/SAVPF 0\r\na=mid:0\r\na=sendrecv\r\n";
+                let sdp = if session_level {
+                    format!("{header}{fingerprints}{media}")
+                } else {
+                    format!("{header}{media}{fingerprints}")
+                };
+                let parsed = Sdp::parse(&sdp).unwrap();
+                assert_eq!(parsed.fingerprint().unwrap().hash_func, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn remote_twcc_feedback_is_explicit_and_per_payload_type() {
+        let sdp = Sdp::parse(concat!(
+            "v=0\r\n",
+            "o=- 1 1 IN IP4 127.0.0.1\r\n",
+            "s=-\r\n",
+            "t=0 0\r\n",
+            "m=video 9 UDP/TLS/RTP/SAVPF 96 98\r\n",
+            "a=mid:0\r\n",
+            "a=sendrecv\r\n",
+            "a=setup:actpass\r\n",
+            "a=ice-ufrag:test\r\n",
+            "a=ice-pwd:testpassword\r\n",
+            "a=rtpmap:96 VP8/90000\r\n",
+            "a=rtpmap:98 VP9/90000\r\n",
+            "a=rtcp-fb:98 transport-cc\r\n",
+        ))
+        .unwrap();
+        let params = sdp.media_lines[0].rtp_params();
+        for (pt, expected) in [(96, false), (98, true)] {
+            let p = params.iter().find(|p| p.pt == pt.into()).unwrap();
+            assert_eq!(p.fb_transport_cc(), expected);
+        }
+    }
+
+    #[test]
+    fn a_group_is_written_without_a_trailing_space() {
+        let empty = SessionAttribute::Group {
+            typ: "BUNDLE".into(),
+            mids: vec![],
+        };
+        assert_eq!(empty.to_string(), "a=group:BUNDLE\r\n");
+
+        let two = SessionAttribute::Group {
+            typ: "BUNDLE".into(),
+            mids: vec!["0".into(), "1".into()],
+        };
+        assert_eq!(two.to_string(), "a=group:BUNDLE 0 1\r\n");
+    }
+
+    fn sdp_with_mids(group: &str, mids: &[&str]) -> Sdp {
+        let mut sdp = format!(
+            "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE {group}\r\n"
+        );
+        for mid in mids {
+            sdp.push_str("m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n");
+            sdp.push_str(&format!("a=mid:{mid}\r\n"));
+            sdp.push_str("a=sendrecv\r\na=rtpmap:111 opus/48000/2\r\n");
+        }
+        Sdp::parse(&sdp).unwrap()
+    }
+
+    #[test]
+    fn an_invalid_m_line_after_a_valid_one_is_inconsistent() {
+        let mut missing_mid = sdp_with_mids("0 1", &["0", "1"]);
+        missing_mid.media_lines[1]
+            .attrs
+            .retain(|a| !matches!(a, MediaAttribute::Mid(_)));
+
+        let mut two_directions = sdp_with_mids("0 1", &["0", "1"]);
+        two_directions.media_lines[1]
+            .attrs
+            .push(MediaAttribute::RecvOnly);
+
+        for sdp in [missing_mid, two_directions] {
+            let expected = sdp.media_lines[1].check_consistent().unwrap();
+            let err = sdp.assert_consistency().unwrap_err();
+            let SdpError::Inconsistent(message) = err else {
+                panic!("expected an inconsistent SDP error, got {err:?}");
+            };
+            assert_eq!(message, expected);
+        }
+    }
+
+    #[test]
+    fn group_mids_match_participating_m_lines_in_order() {
+        for group in ["1 0", "0", "0 1 2", "0 2"] {
+            assert!(
+                sdp_with_mids(group, &["0", "1"])
+                    .assert_consistency()
+                    .is_err()
+            );
+        }
+        sdp_with_mids("0 1", &["0", "1"])
+            .assert_consistency()
+            .unwrap();
+
+        for (group, rejected_index) in [("1", 0), ("0", 1)] {
+            let mut rejected = sdp_with_mids(group, &["0", "1"]);
+            rejected.media_lines[rejected_index].disabled = true;
+            rejected.assert_consistency().unwrap();
+        }
+
+        let mut bundle_only = sdp_with_mids("0 1", &["0", "1"]);
+        bundle_only.media_lines[1].disabled = true;
+        bundle_only.assert_consistency().unwrap();
+    }
+
+    #[test]
+    fn a_rejected_m_line_without_formats_is_consistent() {
+        let mut built = sdp_with_mids("0", &["0", "1"]);
+        built.media_lines[1].disabled = true;
+        built.media_lines[1].pts.clear();
+        built.assert_consistency().unwrap();
+
+        let parsed = Sdp::parse(
+            "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\n\
+             m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:0\r\na=sendrecv\r\na=rtpmap:111 opus/48000/2\r\n\
+             m=video 0 UDP/TLS/RTP/SAVPF \r\na=mid:1\r\na=inactive\r\n",
+        )
+        .unwrap();
+        assert!(parsed.media_lines[1].disabled);
+        assert!(parsed.media_lines[1].pts.is_empty());
+        parsed.assert_consistency().unwrap();
+    }
+
+    #[test]
+    fn duplicate_mids_are_inconsistent() {
+        let cases: [(&str, &[&str]); 3] = [
+            ("0 0", &["0", "0"]),
+            ("0", &["0", "0"]),
+            ("1 0 0", &["1", "0", "0"]),
+        ];
+        for (group, mids) in cases {
+            let err = sdp_with_mids(group, mids).assert_consistency().unwrap_err();
+            let SdpError::Inconsistent(message) = err else {
+                panic!("expected an inconsistent SDP error, got {err:?}");
+            };
+            assert_eq!(message, "Mid 0 is used by more than one m-line");
+        }
+    }
+
     /// Tests for general format parameter serialization and parsing.
     /// These tests verify that format parameters can be correctly converted to/from strings.
     mod format_params {
@@ -1585,6 +1963,29 @@ mod test {
                 ..Default::default()
             };
             assert_eq!(f.to_string(), "minptime=10;stereo=1;useinbandfec=1");
+        }
+
+        #[test]
+        fn fmtp_param_names_are_case_insensitive() {
+            let pairs = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+                pairs
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect()
+            };
+
+            let opus = pairs(&[("MinPTime", "10"), ("UseInbandFEC", "1")]);
+            assert_eq!(
+                FormatParam::parse_pairs(opus),
+                [FormatParam::MinPTime(10), FormatParam::UseInbandFec(true)]
+            );
+
+            let h265 = pairs(&[("Profile-Id", "1"), ("TIER-FLAG", "0"), ("Level-Id", "93")]);
+            let ptl = H265ProfileTierLevel::new(1, 0, 93).unwrap();
+            assert_eq!(
+                FormatParam::parse_pairs(h265),
+                [FormatParam::H265ProfileTierLevel(ptl)]
+            );
         }
     }
 
@@ -1943,8 +2344,8 @@ f78dde68-7055-4e20-bb37-433803dd1ed1\r\n\
 
             let parsed = FormatParams::parse_line(&fmtp_str);
             assert!(parsed.stereo.is_none());
-            assert_eq!(parsed.stereo.unwrap_or(false), false);
-            assert_eq!(parsed.sprop_stereo.unwrap_or(false), false);
+            assert!(!parsed.stereo.unwrap_or(false));
+            assert!(!parsed.sprop_stereo.unwrap_or(false));
         }
     }
 
@@ -2306,6 +2707,251 @@ f78dde68-7055-4e20-bb37-433803dd1ed1\r\n\
 
             // Check RTX
             assert_eq!(h265_payload.resend, Some(97.into()));
+        }
+
+        #[test]
+        fn red_fmtp_is_interpreted_with_red_rtpmap() {
+            // Single-level same-codec RED renders as "<primary>/<primary>".
+            assert_eq!(FormatParam::Red(111.into()).to_string(), "111/111");
+
+            let input = "v=0\r\n\
+            o=- 1 2 IN IP4 127.0.0.1\r\n\
+            s=-\r\n\
+            t=0 0\r\n\
+            a=group:BUNDLE 0\r\n\
+            m=audio 9 UDP/TLS/RTP/SAVPF 111 63\r\n\
+            c=IN IP4 0.0.0.0\r\n\
+            a=mid:0\r\n\
+            a=sendrecv\r\n\
+            a=rtpmap:111 opus/48000/2\r\n\
+            a=rtpmap:63 red/48000/2\r\n\
+            a=fmtp:63 111/111\r\n\
+            a=setup:actpass\r\n\
+            a=ice-ufrag:test\r\n\
+            a=ice-pwd:testpassword\r\n\
+            ";
+            let sdp = Sdp::parse(input).expect("should parse");
+            assert!(sdp.media_lines[0].attrs.iter().any(|a| {
+                matches!(a, MediaAttribute::Fmtp { pt, values }
+                    if *pt == 63.into() && values == &vec![FormatParam::BarePtList(111.into())])
+            }));
+            let params = sdp.media_lines[0].rtp_params();
+            assert_eq!(params[0].red, Some(63.into()));
+
+            // The same bare fmtp text must not be treated as RED without a RED rtpmap.
+            let other_codec = input.replace("a=rtpmap:63 red/48000/2", "a=rtpmap:63 opus/48000/2");
+            let parsed = Sdp::parse(&other_codec).expect("should parse");
+            assert_eq!(parsed.media_lines[0].rtp_params()[0].red, None);
+        }
+
+        #[test]
+        fn red_folds_onto_opus_and_emits() {
+            let input = "v=0\r\n\
+            o=- 1 2 IN IP4 127.0.0.1\r\n\
+            s=-\r\n\
+            t=0 0\r\n\
+            a=group:BUNDLE 0\r\n\
+            m=audio 9 UDP/TLS/RTP/SAVPF 111 63\r\n\
+            c=IN IP4 0.0.0.0\r\n\
+            a=mid:0\r\n\
+            a=sendrecv\r\n\
+            a=rtpmap:111 opus/48000/2\r\n\
+            a=rtpmap:63 red/48000/2\r\n\
+            a=fmtp:63 111/111\r\n\
+            a=setup:actpass\r\n\
+            a=ice-ufrag:test\r\n\
+            a=ice-pwd:testpassword\r\n\
+            ";
+            let sdp = Sdp::parse(input).expect("should parse");
+            let params = sdp.media_lines[0].rtp_params();
+
+            let opus = params
+                .iter()
+                .find(|p| p.spec.codec == Codec::Opus)
+                .expect("opus");
+            assert_eq!(opus.red, Some(63.into()));
+            // RED is folded onto the primary, never a standalone payload.
+            assert!(!params.iter().any(|p| p.pt == 63.into()));
+
+            // Emit: opus re-emits the red rtpmap + fmtp.
+            let mut attrs = Vec::new();
+            opus.as_media_attrs(&mut attrs);
+            let has_red_rtpmap = attrs.iter().any(|a| {
+                matches!(a, MediaAttribute::RtpMap { pt, value }
+                    if *pt == 63.into() && value.codec == Codec::Red && value.channels == Some(2))
+            });
+            let has_red_fmtp = attrs.iter().any(|a| {
+                matches!(a, MediaAttribute::Fmtp { pt, values }
+                    if *pt == 63.into() && values == &vec![FormatParam::Red(111.into())])
+            });
+            assert!(has_red_rtpmap, "should emit red rtpmap");
+            assert!(has_red_fmtp, "should emit red fmtp");
+        }
+
+        #[test]
+        fn red_folds_in_real_chrome_audio_mline() {
+            // Real captured Chrome offer audio section (see docs/chrome-sdp.json): RED (63) sits in
+            // the m-line fmt list right after Opus (111), among 16 payload types.
+            let input = "v=0\r\n\
+            o=- 2954344436352400798 4 IN IP4 127.0.0.1\r\n\
+            s=-\r\n\
+            t=0 0\r\n\
+            a=group:BUNDLE 0\r\n\
+            m=audio 9 UDP/TLS/RTP/SAVPF 111 63 103 104 9 0 8 106 105 13 110 112 113 126\r\n\
+            c=IN IP4 0.0.0.0\r\n\
+            a=mid:0\r\n\
+            a=sendrecv\r\n\
+            a=rtcp-mux\r\n\
+            a=rtpmap:111 opus/48000/2\r\n\
+            a=rtcp-fb:111 transport-cc\r\n\
+            a=fmtp:111 minptime=10;useinbandfec=1\r\n\
+            a=rtpmap:63 red/48000/2\r\n\
+            a=fmtp:63 111/111\r\n\
+            a=rtpmap:103 ISAC/16000\r\n\
+            a=rtpmap:104 ISAC/32000\r\n\
+            a=rtpmap:9 G722/8000\r\n\
+            a=rtpmap:0 PCMU/8000\r\n\
+            a=rtpmap:8 PCMA/8000\r\n\
+            a=rtpmap:106 CN/32000\r\n\
+            a=rtpmap:105 CN/16000\r\n\
+            a=rtpmap:13 CN/8000\r\n\
+            a=rtpmap:110 telephone-event/48000\r\n\
+            a=rtpmap:112 telephone-event/32000\r\n\
+            a=rtpmap:113 telephone-event/16000\r\n\
+            a=rtpmap:126 telephone-event/8000\r\n\
+            a=setup:actpass\r\n\
+            a=ice-ufrag:test\r\n\
+            a=ice-pwd:testpassword\r\n\
+            ";
+            let sdp = Sdp::parse(input).expect("parse real chrome audio m-line");
+            let params = sdp.media_lines[0].rtp_params();
+
+            let opus = params
+                .iter()
+                .find(|p| p.spec.codec == Codec::Opus)
+                .expect("opus");
+            assert_eq!(
+                opus.red,
+                Some(63.into()),
+                "RED must fold onto Opus among real Chrome PTs"
+            );
+            assert!(
+                !params.iter().any(|p| p.pt == 63.into()),
+                "RED is folded, not a standalone payload"
+            );
+            // Opus fmtp is not clobbered by the RED fold.
+            assert_eq!(opus.spec.format.use_inband_fec, Some(true));
+            // Real-world neighbours still parse alongside.
+            assert!(params.iter().any(|p| p.spec.codec == Codec::PCMU));
+            assert!(params.iter().any(|p| p.spec.codec == Codec::PCMA));
+        }
+
+        #[test]
+        fn red_not_folded_onto_video() {
+            // str0m supports RED only for Opus. A video m-line that links red to a video codec
+            // must not have red folded onto it; the video param's `red` stays None.
+            let input = "v=0\r\n\
+            o=- 1 2 IN IP4 127.0.0.1\r\n\
+            s=-\r\n\
+            t=0 0\r\n\
+            a=group:BUNDLE 0\r\n\
+            m=video 9 UDP/TLS/RTP/SAVPF 96 116\r\n\
+            c=IN IP4 0.0.0.0\r\n\
+            a=mid:0\r\n\
+            a=sendrecv\r\n\
+            a=rtpmap:96 VP8/90000\r\n\
+            a=rtpmap:116 red/90000\r\n\
+            a=fmtp:116 96/96\r\n\
+            a=setup:actpass\r\n\
+            a=ice-ufrag:test\r\n\
+            a=ice-pwd:testpassword\r\n\
+            ";
+            let sdp = Sdp::parse(input).expect("parse video m-line with red");
+            let params = sdp.media_lines[0].rtp_params();
+
+            let vp8 = params
+                .iter()
+                .find(|p| p.spec.codec == Codec::Vp8)
+                .expect("vp8");
+            assert_eq!(vp8.red, None, "RED must not fold onto a video codec");
+        }
+
+        #[test]
+        fn red_folds_onto_non_opus_audio() {
+            // RED is audio-agnostic: a remote that links red to any audio codec (here PCMU)
+            // has red folded onto that codec's params.
+            let input = "v=0\r\n\
+            o=- 1 2 IN IP4 127.0.0.1\r\n\
+            s=-\r\n\
+            t=0 0\r\n\
+            a=group:BUNDLE 0\r\n\
+            m=audio 9 UDP/TLS/RTP/SAVPF 0 63\r\n\
+            c=IN IP4 0.0.0.0\r\n\
+            a=mid:0\r\n\
+            a=sendrecv\r\n\
+            a=rtpmap:0 PCMU/8000\r\n\
+            a=rtpmap:63 red/8000\r\n\
+            a=fmtp:63 0/0\r\n\
+            a=setup:actpass\r\n\
+            a=ice-ufrag:test\r\n\
+            a=ice-pwd:testpassword\r\n\
+            ";
+            let sdp = Sdp::parse(input).expect("parse audio m-line with red on PCMU");
+            let params = sdp.media_lines[0].rtp_params();
+
+            let pcmu = params
+                .iter()
+                .find(|p| p.spec.codec == Codec::PCMU)
+                .expect("pcmu");
+            assert_eq!(
+                pcmu.red,
+                Some(63.into()),
+                "RED folds onto any audio codec, not just Opus"
+            );
+        }
+
+        #[test]
+        fn g722_red_emits_wire_clock_rate() {
+            // G722 has a 16 kHz media clock but an 8 kHz RTP clock (RFC 3551). Its RED rtpmap
+            // must advertise 8000 (the wire rate), not 16000, or the peer derives the wrong
+            // timestamps.
+            let input = "v=0\r\n\
+            o=- 1 2 IN IP4 127.0.0.1\r\n\
+            s=-\r\n\
+            t=0 0\r\n\
+            a=group:BUNDLE 0\r\n\
+            m=audio 9 UDP/TLS/RTP/SAVPF 9 63\r\n\
+            c=IN IP4 0.0.0.0\r\n\
+            a=mid:0\r\n\
+            a=sendrecv\r\n\
+            a=rtpmap:9 G722/8000\r\n\
+            a=rtpmap:63 red/8000\r\n\
+            a=fmtp:63 9/9\r\n\
+            a=setup:actpass\r\n\
+            a=ice-ufrag:test\r\n\
+            a=ice-pwd:testpassword\r\n\
+            ";
+            let sdp = Sdp::parse(input).expect("parse G722 + red");
+            let params = sdp.media_lines[0].rtp_params();
+            let g722 = params
+                .iter()
+                .find(|p| p.spec.codec == Codec::G722)
+                .expect("g722");
+            assert_eq!(g722.red, Some(63.into()), "RED folds onto G722");
+
+            let mut attrs = Vec::new();
+            g722.as_media_attrs(&mut attrs);
+            let red_clock = attrs.iter().find_map(|a| match a {
+                MediaAttribute::RtpMap { value, .. } if value.codec == Codec::Red => {
+                    Some(value.clock_rate)
+                }
+                _ => None,
+            });
+            assert_eq!(
+                red_clock,
+                Some(Frequency::EIGHT_KHZ),
+                "G722 RED rtpmap must advertise the 8 kHz wire clock"
+            );
         }
     }
 

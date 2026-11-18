@@ -27,9 +27,9 @@ You need:
 - **ESP32-S3-DevKitC-1 N32R16V**, with 32 MiB octal flash, 16 MiB octal PSRAM,
   and an RGB LED on GPIO38. Use its native USB port and a Wi-Fi network that
   allows outbound IPv4 UDP and HTTPS.
-- **Linux x86_64**, Node 24, Python 3.11 with venv support, Rust 1.88 or later
+- **Linux x86_64**, Node 24, Python 3.11 with venv support, host Rust 1.100.0
   with rustup/rustfmt/Clippy, and the
-  [ESP-IDF prerequisites](https://docs.espressif.com/projects/esp-idf/en/v5.5.3/esp32s3/get-started/linux-macos-setup.html#step-1-install-prerequisites).
+  [ESP-IDF prerequisites](https://docs.espressif.com/projects/esp-idf/en/v5.5.6/esp32s3/get-started/linux-macos-setup.html#step-1-install-prerequisites).
   Install `ffmpeg` and `ffprobe` to prepare your own audio.
 - **A Cloudflare account** with Realtime SFU, Workers, SQLite-backed Durable
   Objects, and an active zone for a custom domain.
@@ -133,8 +133,8 @@ Use the [firmware guide](firmware/README.md) for device builds and the
 [Worker guide](worker/README.md) for local browser/backend development.
 `make fmt` formats Rust, C, and web source.
 
-Repository CI uses Node 24 and Rust 1.88.0. From the examples repository root,
-run the declared suite once through the blueprint runner:
+From the examples repository root, run the same suite as CI through the
+blueprint runner:
 
 ```sh
 npm ci

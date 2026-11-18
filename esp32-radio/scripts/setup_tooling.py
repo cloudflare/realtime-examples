@@ -80,10 +80,11 @@ def main():
         env = os.environ.copy()
         env.update(IDF_TOOLS_PATH=str(sdk / "tools"), PIP_CACHE_DIR=str(sdk / "pip-cache"))
         run(["bash", sdk / "esp-idf/install.sh", "esp32s3"], env=env)
+        run([sys.executable, sdk / "esp-idf/tools/idf_tools.py", "install", "ninja"], env=env)
     esptool = ROOT / ".tools/esptool/bin/python"
     if not esptool.exists():
         run([sys.executable, "-m", "venv", esptool.parent.parent])
-    run([esptool, "-m", "pip", "install", "esptool==5.4.0", "pyserial==3.5"])
+    run([esptool, "-m", "pip", "install", "esptool==5.6.0", "pyserial==3.5"])
     run(["cargo", "fetch", "--locked", "--manifest-path", ROOT / "firmware/Cargo.toml"])
     print("Firmware tooling ready. Existing Rust defaults and shell profiles were preserved.")
 

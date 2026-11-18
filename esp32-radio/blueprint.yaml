@@ -33,14 +33,14 @@ ci:
   node_version: "24"
   install: |
     set -eu
-    rustup toolchain install 1.88.0 --profile minimal --component rustfmt,clippy
+    rustup toolchain install 1.100.0 --profile minimal --component rustfmt,clippy
     make setup-c-format
     npm ci --ignore-scripts --prefix worker
   checks:
     - name: Formatting, portable Rust, web, and host tools
-      run: make check CARGO='cargo +1.88.0'
+      run: make check CARGO='cargo +1.100.0'
     - name: Vendored transport library and packet tests
-      run: make check-transport-patches CARGO='cargo +1.88.0'
+      run: make check-transport-patches CARGO='cargo +1.100.0'
     - name: Worker and Durable Object lifecycle
       run: make test-worker
     - name: Browser and Worker build, bundle, and scheduled alarm

@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+use super::Codec;
 use crate::sdp::FormatParam;
 
 /// Codec specific format parameters.
@@ -108,28 +109,86 @@ pub struct FormatParams {
     /// When > 0, DONL fields are included in H.265 RTP packets to support
     /// out-of-order NAL unit decoding.
     pub sprop_max_don_diff: Option<u16>,
+
+    /// Highest event code in the inclusive `0-X` telephone-event SDP range.
+    ///
+    /// Only contiguous ranges starting at zero are supported. `None` uses the
+    /// library default `0-16`. Negotiation takes the smaller maximum per payload
+    /// type across the session.
+    pub telephone_event_max: Option<u8>,
+
+    /// AMR-WB `octet-align`. `Some(true)` selects the octet-aligned payload
+    /// layout, otherwise bandwidth-efficient is used.
+    pub octet_align: Option<bool>,
+
+    /// AMR-WB `mode-set`, a bitmask of the allowed speech modes 0..=8.
+    ///
+    /// A mode set from either peer applies to both directions, so only write
+    /// frames in these modes.
+    pub mode_set: Option<u16>,
 }
 
 #[cfg(feature = "drv")]
 crate::drv_identity_copy!(FormatParams);
 
 impl FormatParams {
+    pub(crate) const DEFAULT_TELEPHONE_EVENT_MAX: u8 = 16;
+
+    pub(crate) fn from_sdp_fmtp<'a>(
+        codec: Codec,
+        mut lines: impl Iterator<Item = &'a [FormatParam]>,
+    ) -> Option<Self> {
+        let mut params = Self::default();
+        if codec.is_tele() {
+            let max = match lines.next() {
+                None => Self::DEFAULT_TELEPHONE_EVENT_MAX,
+                Some([FormatParam::BareRange(max) | FormatParam::TelephoneEvents(max)]) => *max,
+                _ => return None,
+            };
+            if lines.next().is_some() {
+                return None;
+            }
+            params.telephone_event_max = Some(max);
+        } else {
+            for line in lines {
+                for param in line {
+                    // Decline AMR-WB payload types that need features str0m lacks.
+                    if codec == Codec::AmrWb && *param == FormatParam::AmrWbUnsupported {
+                        return None;
+                    }
+                    if !matches!(param, FormatParam::TelephoneEvents(_)) {
+                        params.set_param(param);
+                    }
+                }
+            }
+        }
+        Some(params)
+    }
+
     /// Parse an fmtp line to create a FormatParams.
     ///
-    /// Example `minptime=10;useinbandfec=1`.
+    /// Example `minptime=10;useinbandfec=1`, or `0-16` for telephone events.
     pub fn parse_line(line: &str) -> Self {
+        let mut p = FormatParams::default();
         let key_vals: Vec<_> = line
             .split(';')
             .filter_map(|pair| {
                 let mut kv = pair.split('=');
                 match (kv.next(), kv.next()) {
                     (Some(k), Some(v)) => Some((k.trim().to_string(), v.trim().to_string())),
-                    _ => None,
+                    (Some(value), None) => {
+                        let value = value.trim();
+                        let param = FormatParam::parse_telephone_events(value);
+                        if param == FormatParam::Unknown && !value.is_empty() {
+                            debug!("Ignoring unsupported fmtp value: {value}");
+                        }
+                        p.set_param(&param);
+                        None
+                    }
+                    (None, _) => None,
                 }
             })
             .collect();
-
-        let mut p = FormatParams::default();
 
         for param in FormatParam::parse_pairs(key_vals) {
             p.set_param(&param);
@@ -156,7 +215,13 @@ impl FormatParams {
             H265ProfileTierLevel(v) => self.h265_profile_tier_level = Some(*v),
             H266ProfileTierLevel(v) => self.h266_profile_tier_level = Some(*v),
             SpropMaxDonDiff(v) => self.sprop_max_don_diff = Some(*v),
+            TelephoneEvents(v) => self.telephone_event_max = Some(*v),
+            BareRange(_) | BarePtList(_) => {}
+            OctetAlign(v) => self.octet_align = Some(*v),
+            ModeSet(v) => self.mode_set = Some(*v),
+            AmrWbUnsupported => {}
             Apt(_) => {}
+            Red(_) => {}
             Unknown => {}
         }
     }
@@ -212,6 +277,15 @@ impl FormatParams {
         if let Some(v) = self.sprop_max_don_diff {
             r.push(SpropMaxDonDiff(v));
         }
+        if let Some(v) = self.telephone_event_max {
+            r.push(TelephoneEvents(v));
+        }
+        if let Some(v) = self.octet_align {
+            r.push(OctetAlign(v));
+        }
+        if let Some(v) = self.mode_set {
+            r.push(ModeSet(v));
+        }
 
         r
     }
@@ -232,6 +306,22 @@ impl fmt::Display for FormatParams {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn telephone_event_ranges_roundtrip() {
+        for max in [0, 7, 15, 16, 255] {
+            let value = format!("0-{max}");
+            let params = FormatParams::parse_line(&value);
+            assert_eq!(params.telephone_event_max, Some(max));
+            assert_eq!(params.to_string(), value);
+        }
+        for value in ["", "0-", "0-256", "15-0", "1-15", "0-15,16", "0-+15"] {
+            assert_eq!(
+                FormatParam::parse_telephone_events(value),
+                FormatParam::Unknown
+            );
+        }
+    }
 
     #[test]
     fn sprop_max_don_diff_roundtrip() {
@@ -312,5 +402,36 @@ mod test {
         let parsed = FormatParams::parse_line(&fmtp_str);
         assert_eq!(parsed.h266_profile_tier_level, Some(ptl));
         assert_eq!(parsed.sprop_max_don_diff, Some(32));
+    }
+
+    #[test]
+    fn amr_wb_fmtp() {
+        let f = FormatParams::parse_line("octet-align=1; mode-set=0, 1,2;max-red=220");
+        assert_eq!(f.to_string(), "octet-align=1;mode-set=0,1,2");
+        assert_eq!(
+            FormatParams::parse_line("mode-set=0,9"),
+            FormatParams::default()
+        );
+
+        let declined = |codec, k: &str, v: &str| {
+            let line = [FormatParam::parse(k, v)];
+            FormatParams::from_sdp_fmtp(codec, [&line[..]].into_iter()).is_none()
+        };
+        for (k, v) in [
+            ("crc", "1"),
+            ("robust-sorting", "1"),
+            ("interleaving", "30"),
+            ("mode-change-period", "2"),
+        ] {
+            assert!(declined(Codec::AmrWb, k, v), "{k}={v}");
+            assert!(!declined(Codec::Opus, k, v), "{k}={v}");
+        }
+        for (k, v) in [
+            ("crc", "0"),
+            ("robust-sorting", "0"),
+            ("mode-change-period", "1"),
+        ] {
+            assert!(!declined(Codec::AmrWb, k, v), "{k}={v}");
+        }
     }
 }

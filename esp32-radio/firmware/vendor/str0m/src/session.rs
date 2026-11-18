@@ -20,13 +20,18 @@ use crate::media::{KeyframeRequestKind, MID_PROBE};
 use crate::media::{MediaAdded, MediaChanged};
 use crate::pacer::PacerControl;
 use crate::pacer::{Pacer, PacerImpl};
+use crate::packet::{RedBlock, RedDecoder, red_same_pt_blocks};
+use crate::poll::Wake;
 use crate::rtp::{Extension, RawPacket};
 use crate::rtp_::Direction;
+use crate::rtp_::ExtensionValues;
+use crate::rtp_::MediaTime;
 use crate::rtp_::MidRid;
 use crate::rtp_::Pli;
 use crate::rtp_::Pt;
 use crate::rtp_::SRTCP_OVERHEAD;
 use crate::rtp_::SeqNo;
+use crate::rtp_::SeqNoWindow;
 use crate::rtp_::{Bitrate, ExtensionMap, Goodbye, Mid, ReportList, Rtcp, RtcpFb};
 use crate::rtp_::{Dlrr, DlrrItem, ExtendedReport, ReportBlock};
 use crate::rtp_::{RtpHeader, SessionId, TwccPacketId, extend_u16};
@@ -38,9 +43,8 @@ use crate::util::{Soonest, SystemTimeExt, already_happened, not_happening};
 use crate::{Reason, net};
 use crate::{RtcConfig, RtcError};
 
-/// Minimum time we delay between sending nacks. This should be
-/// set high enough to not cause additional problems in very bad
-/// network conditions.
+/// Minimum interval between NACK polls. Per-packet retries also wait for RTT.
+/// Keep this high enough to avoid additional problems in very bad network conditions.
 const NACK_MIN_INTERVAL: Duration = Duration::from_millis(33);
 
 /// Delay between reports of TWCC. This is deliberately very low.
@@ -68,6 +72,7 @@ pub(crate) struct Session {
 
     reordering_size_audio: usize,
     reordering_size_video: usize,
+    reordering_timeout_audio: Option<Duration>,
     intervals: RtcpReportIntervals,
     pub send_buffer_audio: usize,
     pub send_buffer_video: usize,
@@ -90,9 +95,10 @@ pub(crate) struct Session {
     twcc: u64,
     twcc_rx_register: TwccRecvRegister,
     twcc_tx_register: TwccSendRegister,
-    max_rx_seq_lookup: HashMap<Ssrc, SeqNo>,
+    max_rx_seq_lookup: HashMap<Ssrc, SeqNoWindow>,
 
     bwe: Option<Bwe>,
+    bwe_last_event: Option<(Bitrate, bool)>,
 
     enable_twcc_feedback: bool,
 
@@ -105,9 +111,6 @@ pub(crate) struct Session {
 
     // Next packet for RtpPacket event.
     pending_packet: Option<RtpPacket>,
-
-    // Whether we sent a single outgoing RTP packet.
-    packet_first_sent: bool,
 
     // Total RTP payload bytes for media, including retransmissions.
     media_bytes_rx: u64,
@@ -176,10 +179,11 @@ impl Session {
         Session {
             id,
             medias: vec![],
-            streams: Streams::new(enable_stats, *config.mtu.end()),
+            streams: Streams::new(enable_stats, *config.mtu.end(), config.pause_threshold),
             app: None,
             reordering_size_audio: config.reordering_size_audio,
             reordering_size_video: config.reordering_size_video,
+            reordering_timeout_audio: config.reordering_timeout_audio,
             intervals: config.intervals,
             send_buffer_audio: config.send_buffer_audio,
             send_buffer_video: config.send_buffer_video,
@@ -199,12 +203,12 @@ impl Session {
             twcc_tx_register: TwccSendRegister::new(1000),
             max_rx_seq_lookup: HashMap::new(),
             bwe,
+            bwe_last_event: None,
             enable_twcc_feedback: false,
             pacer,
             pacer_control: PacerControl::new(),
             poll_packet_buf: vec![0; 2000],
             pending_packet: None,
-            packet_first_sent: false,
             media_bytes_rx: 0,
             media_bytes_tx: 0,
             ice_lite: config.ice_lite,
@@ -272,13 +276,16 @@ impl Session {
         self.srtp_tx = Some(SrtpContext::new(crypto, srtp_profile, &mat, left));
     }
 
-    pub fn handle_timeout(&mut self, now: Instant) -> Result<(), RtcError> {
+    pub fn handle_timeout(&mut self, now: Instant, wake: &mut Wake) -> Result<(), RtcError> {
         if self.rtp_closing {
+            // Closing only drains previously queued BYEs; this timeout changes nothing.
+            wake.no_events();
+            wake.no_timeout();
             return Ok(());
         }
 
-        // Payload any waiting frames
-        self.do_payload()?;
+        // Payload ready media.
+        self.do_payload(now)?;
 
         let sender_ssrc = self.streams.first_ssrc_local();
 
@@ -332,7 +339,8 @@ impl Session {
             self.last_nack = now;
         }
 
-        self.update_queue_state(now);
+        let probe_media = self.handle_timeout_bwe(now);
+        self.update_queue_state(now, probe_media);
 
         if let Some(twcc_at) = self.twcc_at() {
             if now >= twcc_at {
@@ -340,19 +348,19 @@ impl Session {
             }
         }
 
-        self.handle_timeout_bwe(now);
-
         Ok(())
     }
 
-    fn handle_timeout_bwe(&mut self, now: Instant) {
-        let Some(bwe) = self.bwe.as_mut() else {
-            return;
-        };
+    fn handle_timeout_bwe(&mut self, now: Instant) -> Option<(Mid, Pt)> {
+        self.bwe.as_ref()?;
 
-        // We can only run probes after first packet is sent and there
-        // are any queues that can handle padding requests.
-        let do_probe = self.packet_first_sent && self.pacer.has_padding_queue();
+        // We can request probes once SRTP keys are available and a non-stopped,
+        // sending media section has both a transport sequence extension and a
+        // payload type supporting TWCC feedback. No prior media packet or RTX
+        // stream is required. The Direct API uses its configured capabilities.
+        let probe_media = self.srtp_tx.as_ref().and_then(|_| self.probe_media());
+        let do_probe = probe_media.is_some();
+        let bwe = self.bwe.as_mut()?;
 
         if let Some(probe_config) = bwe.handle_timeout(now, do_probe) {
             // Only start the probe in the pacer if the estimator accepted it.
@@ -368,11 +376,30 @@ impl Session {
         // Check if active probe just completed
         if let Some(cluster_id) = self.pacer.check_probe_complete(now) {
             bwe.end_probe(now, cluster_id);
+            self.streams.set_probe_media(None);
         }
+        probe_media
     }
 
-    fn update_queue_state(&mut self, now: Instant) {
-        let iter = self.streams.streams_tx().map(|m| m.queue_state(now));
+    fn update_queue_state(&mut self, now: Instant, probe_media: Option<(Mid, Pt)>) {
+        // Do not make unsendable media/padding ready before DTLS supplies keys.
+        // Otherwise an immediate pacer deadline can starve the application's I/O.
+        if self.srtp_tx.is_none() {
+            return;
+        }
+
+        let probe_media = probe_media.filter(|_| self.pacer.active_cluster().is_some());
+        self.streams.set_probe_media(probe_media);
+        let medias = &self.medias;
+        let codecs = &self.codec_config;
+        let iter = self.streams.send_queue_states(now, |mid, pt| {
+            // Reuse the already-validated fallback binding when it matches.
+            probe_media == Some((mid, pt))
+                || medias
+                    .iter()
+                    .find(|m| m.mid() == mid)
+                    .is_some_and(|media| Self::probe_pt(media, codecs, Some(pt)).is_some())
+        });
 
         let Some(padding_request) = self.pacer.handle_timeout(now, iter) else {
             return;
@@ -384,6 +411,35 @@ impl Session {
             .expect("pacer to use an existing stream");
 
         stream.generate_padding(padding_request.padding);
+    }
+
+    // Use a negotiated PT and MID so browser transports can route the packet to
+    // their receive-side congestion controller before discarding the empty payload.
+    fn probe_media(&self) -> Option<(Mid, Pt)> {
+        self.medias.iter().find_map(|media| {
+            Self::probe_pt(media, &self.codec_config, None).map(|pt| (media.mid(), pt))
+        })
+    }
+
+    // A regular padding source needs feedback for its actual payload type;
+    // the SSRC 0 fallback can use any eligible payload type on this media.
+    fn probe_pt(media: &Media, codecs: &CodecConfig, padding_pt: Option<Pt>) -> Option<Pt> {
+        if media.stopped() || !media.direction().is_sending() {
+            return None;
+        }
+        media
+            .remote_extmap()
+            .id_of(Extension::TransportSequenceNumber)?;
+        codecs
+            .params()
+            .iter()
+            .find(|p| {
+                padding_pt.is_none_or(|pt| p.pt() == pt)
+                    && p.fb_transport_cc()
+                    && p.spec().codec.is_audio() == media.kind().is_audio()
+                    && (media.remote_pts().is_empty() || media.remote_pts().contains(&p.pt()))
+            })
+            .map(|p| p.pt())
     }
 
     fn create_twcc_feedback(&mut self, sender_ssrc: Ssrc, now: Instant) -> Option<()> {
@@ -428,8 +484,11 @@ impl Session {
         }));
     }
 
-    pub fn handle_rtp_receive(&mut self, now: Instant, message: &[u8]) {
+    pub fn handle_rtp_receive(&mut self, now: Instant, message: &[u8], wake: &mut Wake) {
         let Some(header) = RtpHeader::parse(message, &self.exts) else {
+            // Parsing has not touched stream state. Later rejection paths can have.
+            wake.no_events();
+            wake.no_timeout();
             trace!("Failed to parse RTP header");
             return;
         };
@@ -437,15 +496,25 @@ impl Session {
         self.handle_rtp(now, header, message);
     }
 
-    pub fn handle_rtcp_receive(&mut self, now: Instant, message: &[u8]) {
+    pub fn handle_rtcp_receive(&mut self, now: Instant, message: &[u8], wake: &mut Wake) {
         // According to spec, the outer enclosing SRTCP packet should always be a SR or RR,
         // even if it's irrelevant and empty.
         // In practice I'm not sure that is happening, because libWebRTC hates empty packets.
-        self.handle_rtcp(now, message);
+        if self.handle_rtcp(now, message, wake).is_none() {
+            // Missing keys or failed authentication: no reports reached the session.
+            wake.no_events();
+            wake.no_timeout();
+        }
     }
 
     fn mid_and_ssrc_for_header(&mut self, now: Instant, header: &RtpHeader) -> Option<(Mid, Ssrc)> {
         let ssrc_header = header.ssrc;
+
+        // SSRC 0 is used for non-media BWE probes from libwebrtc.
+        // These probes need TWCC feedback but don't carry actual media.
+        if ssrc_header.is_probe() {
+            return self.ensure_probe_stream(header.payload_type);
+        }
 
         if let Some(r) = self.streams.mid_ssrc_rx_by_ssrc_or_rtx(now, ssrc_header) {
             return Some(r);
@@ -457,12 +526,6 @@ impl Session {
         // The dynamic mapping might have added an entry by now.
         if let Some(r) = self.streams.mid_ssrc_rx_by_ssrc_or_rtx(now, ssrc_header) {
             return Some(r);
-        }
-
-        // SSRC 0 is used for non-media BWE probes from libwebrtc.
-        // These probes need TWCC feedback but don't carry actual media.
-        if ssrc_header.is_probe() {
-            return self.ensure_probe_stream(header.payload_type);
         }
 
         None
@@ -478,10 +541,19 @@ impl Session {
 
         // Add PayloadParams for this PT if not already configured.
         // Probes may use different PTs, so we add them as we see them.
-        self.probe_payload_params = Some(PayloadParams::new_probe(pt));
+        if self
+            .probe_payload_params
+            .as_ref()
+            .is_none_or(|p| p.pt() != pt)
+        {
+            self.probe_payload_params = Some(PayloadParams::new_probe(pt));
+        }
 
-        // Create the stream with NACK suppressed (probes don't need retransmission)
-        self.streams.expect_stream_rx(ssrc, None, midrid, true);
+        // Create the stream with NACK suppressed (probes don't need retransmission).
+        // Reusing it must not invalidate the cached NACK state on every packet.
+        if !self.streams.has_stream_rx(ssrc) {
+            self.streams.expect_stream_rx(ssrc, None, midrid, true);
+        }
 
         Some((MID_PROBE, ssrc))
     }
@@ -507,10 +579,11 @@ impl Session {
         };
 
         // Figure out which payload the PT maps to. Either main or RTX.
-        let maybe_payload = self
-            .codec_config
-            .iter()
-            .find(|p| p.pt() == header.payload_type || p.resend() == Some(header.payload_type));
+        let maybe_payload = self.codec_config.iter().find(|p| {
+            p.pt() == header.payload_type
+                || p.resend() == Some(header.payload_type)
+                || p.red() == Some(header.payload_type)
+        });
 
         // If we don't find it, bail out.
         let Some(payload) = maybe_payload else {
@@ -526,8 +599,10 @@ impl Session {
             self.streams
                 .map_dynamic_by_rid(header.ssrc, midrid, media, *payload, is_main);
         } else {
-            // Case B - the payload type identifies RTX.
-            let is_main = payload.pt() == header.payload_type;
+            // Case B - the payload type identifies RTX. RED rides the main SSRC, so a RED
+            // PT is also "main".
+            let is_main =
+                payload.pt() == header.payload_type || payload.red() == Some(header.payload_type);
 
             let midrid = MidRid(mid, None);
 
@@ -542,11 +617,13 @@ impl Session {
 
         trace!("Handle RTP: {:?}", header);
 
-        // The ssrc is the _main_ ssrc (no the rtx, that might be in the header).
-        let Some((mid, ssrc)) = self.mid_and_ssrc_for_header(now, &header) else {
-            debug!("No mid/SSRC for header: {:?}", header);
+        // Early repair padding has no main stream yet, but still needs transport feedback.
+        let mapped = self.mid_and_ssrc_for_header(now, &header);
+        let can_receive = mapped.is_some() || self.is_early_rtx_padding(&header);
+        if !can_receive {
+            trace!("No mid/SSRC for header: {:?}", header);
             return;
-        };
+        }
 
         let srtp = match self.srtp_rx.as_mut() {
             Some(v) => v,
@@ -556,11 +633,8 @@ impl Session {
             }
         };
 
-        // mid_and_ssrc_for_header guarantees stream exists.
-        // Media may not exist for internal probe streams (SSRC 0).
-        let stream = self.streams.stream_rx(&ssrc).unwrap();
-
-        let maybe_params = if ssrc.is_probe() {
+        let mut stream = mapped.and_then(|(_, ssrc)| self.streams.stream_rx(&ssrc));
+        let maybe_params = if header.ssrc.is_probe() {
             self.probe_payload_params.as_ref()
         } else {
             main_payload_params(&self.codec_config, header.payload_type)
@@ -578,20 +652,33 @@ impl Session {
         };
         let clock_rate = params.spec().rtp_clock_rate();
         let pt = params.pt();
-        let is_repair = pt != header.payload_type;
-
-        let max_seq_lookup = make_max_seq_lookup(&self.max_rx_seq_lookup);
-
-        // is_repair controls whether update is updating the main register or the RTX register.
-        // Either way we get a seq_no_outer which is used to decrypt the SRTP.
-        let mut seq_no = stream.extend_seq(&header, is_repair, max_seq_lookup);
-
-        if !stream.is_new_packet(is_repair, seq_no) {
-            // Dupe packet. This could be a potential SRTP replay attack, which means
-            // we should not spend any CPU cycles towards decrypting it.
+        let is_red = params.red() == Some(header.payload_type);
+        // RTX padding may use the main payload type, so an associated RTX SSRC takes precedence.
+        let repair_ssrc = stream.as_ref().and_then(|s| s.rtx());
+        let is_repair = repair_ssrc == Some(header.ssrc) || (!is_red && pt != header.payload_type);
+        let history = self.max_rx_seq_lookup.get(&header.ssrc);
+        let mut seq_no = if let Some(stream) = &mut stream {
+            let max_seq_lookup = make_max_seq_lookup(&self.max_rx_seq_lookup);
+            stream.extend_seq(&header, is_repair, max_seq_lookup)
+        } else {
+            let max_seq = history.map(|s| s.max_seq());
+            header.sequence_number(max_seq)
+        };
+        let is_repair_padding = is_repair && header.has_padding;
+        let use_session_history = is_repair_padding || stream.is_none();
+        // A newly discovered stream restores only the RTX maximum and blocks older packets.
+        // Keep using the session bitmap for padding so unseen reordered packets still count,
+        // while padding already received before discovery remains protected against replay.
+        let is_new = if use_session_history {
+            history.is_none_or(|history| history.accepts(seq_no))
+        } else {
+            let stream = stream.as_ref().unwrap();
+            stream.is_new_packet(is_repair, seq_no)
+        };
+        if !is_new {
             trace!(
-                "Ignoring dupe packet mid: {} seq_no: {} is_repair: {}",
-                mid, seq_no, is_repair
+                "Ignoring dupe packet ssrc: {} seq_no: {}",
+                header.ssrc, seq_no
             );
             return;
         }
@@ -603,12 +690,12 @@ impl Session {
             Some(d) => d,
             None => {
                 trace!(
-                    "Failed to unprotect SRTP for SSRC: {} pt: {}  mid: {} \
+                    "Failed to unprotect SRTP for SSRC: {} pt: {}  mid: {:?} \
                     rid: {:?} seq_no: {} is_repair: {}",
                     header.ssrc,
                     pt,
-                    stream.mid(),
-                    stream.rid(),
+                    header.ext_vals.mid,
+                    header.ext_vals.rid.or(header.ext_vals.rid_repair),
                     seq_no,
                     is_repair
                 );
@@ -628,6 +715,12 @@ impl Session {
             data
         };
 
+        // The header padding flag alone does not mean the packet contains only padding.
+        // Authenticate and unpad first; media payload needs a mapped stream to be processed.
+        if stream.is_none() && !data.is_empty() {
+            return;
+        }
+
         if let Some(raw_packets) = &mut self.raw_packets {
             raw_packets.push_back(Box::new(RawPacket::RtpRx(header.clone(), data.to_vec())));
         }
@@ -643,8 +736,22 @@ impl Session {
         // like A -> B -> A. When we go back to A, we must keep the ROC.
         update_max_seq(&mut self.max_rx_seq_lookup, header.ssrc, seq_no);
 
+        let Some(stream) = stream else {
+            return;
+        };
+        // A receive stream exists only when MID/SSRC mapping succeeded.
+        let (mid, ssrc) = mapped.unwrap();
+
         // Register reception in nack registers.
         let receipt_outer = stream.update_register(now, &header, clock_rate, is_repair, seq_no);
+
+        // RED-recovered packets (frame mode) are collected here and delivered after the
+        // primary, filling single-packet losses from the next packet's redundancy.
+        let mut red_recovered: Vec<(RtpHeader, Arc<[u8]>, SeqNo, MediaTime)> = Vec::new();
+
+        // Capture the full wire payload length before RED unwrapping narrows `data` to the primary
+        // block. The sender counts the whole RED-wrapped payload, so receive stats must too.
+        let wire_payload_len = data.len();
 
         // RTX packets must be rewritten to be a normal packet. This only changes the
         // the seq_no, however MediaTime might be different when interpreted against the
@@ -673,6 +780,53 @@ impl Session {
             // Now update the "main" register with the repaired packet info.
             let receipt = stream.update_register(now, &header, clock_rate, false, seq_no);
             (receipt, data)
+        } else if is_red && !self.rtp_mode {
+            // Frame mode: RED rides the main SSRC/seq. Decode to the primary (Opus) payload
+            // and rewrite the header PT; drop the packet if the RED structure is malformed.
+            let Some(un) = un_red(&mut header, data, pt) else {
+                return;
+            };
+            // Each redundant block carries an earlier frame. Place it at the sequence number it
+            // belongs to (derived from its timestamp and the packets received around it, see
+            // `StreamRx::red_locate_seq`) and, if that is still missing, deliver it as a
+            // recovered packet so a loss is filled without a retransmission. Only same-PT blocks
+            // are considered: RFC 2198 permits a redundant block of another codec, which must
+            // never be fed to this depayloader.
+            for b in red_same_pt_blocks(&un.redundant, *pt) {
+                // Skip recovery (rather than inject a bad timestamp) if the offset somehow
+                // exceeds the primary's extended media time.
+                let Some(numer) = receipt_outer
+                    .time
+                    .numer()
+                    .checked_sub(b.timestamp_offset as u64)
+                else {
+                    continue;
+                };
+                // `None` when the block can't be tied to a currently-missing seq no (see
+                // `red_locate_seq` for the exact vs. best-effort cases), or when that seq no
+                // was already received or recovered. Recovery only ever fills a hole.
+                let Some(rec_seq) = stream.red_locate_seq(seq_no, numer) else {
+                    continue;
+                };
+                // Mark it so the seq is neither NACKed nor recovered again from a later packet.
+                // It is not counted as received (it was lost on the wire), so reception reports
+                // still carry the real loss. `red_locate_seq` now rejects this seq, which also
+                // dedups a malformed packet repeating the same offset.
+                stream.mark_red_recovered(rec_seq, numer);
+
+                let rec_time = MediaTime::new(numer, clock_rate);
+                let mut rec_header = header.clone();
+                rec_header.sequence_number = *rec_seq as u16;
+                // RFC 2198: the marker bit is not carried for redundant blocks. Clearing it also
+                // stops a recovered (historical) audio frame being seen as a start-of-talkspurt.
+                rec_header.marker = false;
+                // Redundant blocks carry no header extensions, so a recovered frame cannot carry
+                // its own (e.g. audio level). Clear the carrier's extensions rather than let the
+                // recovered frame inherit the current packet's metadata.
+                rec_header.ext_vals = ExtensionValues::default();
+                red_recovered.push((rec_header, Arc::from(b.payload), rec_seq, rec_time));
+            }
+            (receipt_outer, un.primary)
         } else {
             // This is not RTX, the outer seq and time is what we use. The first
             // stream.update will have updated the main register.
@@ -684,13 +838,20 @@ impl Session {
             return;
         }
 
-        self.media_bytes_rx += data.len() as u64;
+        // For RED (frame mode) `data` is now just the unwrapped primary; count the full RED wire
+        // payload instead so receive accounting matches the sender's byte count.
+        let rx_bytes = if is_red && !self.rtp_mode {
+            wire_payload_len
+        } else {
+            data.len()
+        };
+        self.media_bytes_rx += rx_bytes as u64;
 
         // One-shot conversion to Arc<[u8]>: a single allocation that copies
         // only the trimmed payload bytes out of the SRTP scratch buffer.
         let payload: Arc<[u8]> = Arc::from(data);
 
-        let packet = stream.handle_rtp(now, header, payload, seq_no, receipt.time);
+        let packet = stream.handle_rtp(now, header, payload, seq_no, receipt.time, rx_bytes);
 
         if self.rtp_mode {
             // In RTP mode, we store the packet temporarily here for the next poll_output().
@@ -711,14 +872,52 @@ impl Session {
                 &self.codec_config,
             );
         }
+
+        // Deliver any RED-recovered packets (frame mode only) through the same depayload
+        // path. The jitter buffer orders them and dedups against any later real arrival.
+        for (rec_header, rec_payload, rec_seq, rec_time) in red_recovered {
+            // make_rtp_packet (not handle_rtp): recovered packets must not inflate RX stats.
+            let rec_packet =
+                stream.make_rtp_packet(now, rec_header, rec_payload, rec_seq, rec_time);
+            let media = self.medias.iter_mut().find(|m| m.mid() == mid).unwrap();
+            media.depayload(
+                stream.rid(),
+                rec_packet,
+                self.reordering_size_audio,
+                self.reordering_size_video,
+                &self.codec_config,
+            );
+        }
     }
 
-    fn handle_rtcp(&mut self, now: Instant, buf: &[u8]) -> Option<()> {
+    /// Identifies candidates for padding receipt before the main SSRC is discovered.
+    ///
+    /// MID and repair RID must identify a negotiated simulcast layer, and the codec must
+    /// support RTX. This limits the fallback to expected repair traffic instead of accepting
+    /// arbitrary unmapped SSRCs. These header checks do not authenticate the packet or prove
+    /// it contains only padding; the receive path verifies both before recording a receipt.
+    fn is_early_rtx_padding(&self, header: &RtpHeader) -> bool {
+        let Some(mid) = header.ext_vals.mid else {
+            return false;
+        };
+        let Some(media) = self.medias.iter().find(|m| m.mid() == mid) else {
+            return false;
+        };
+        let params = main_payload_params(&self.codec_config, header.payload_type);
+        let has_rtx = params.is_some_and(|p| p.resend().is_some());
+        let repair_rid = header.ext_vals.rid_repair;
+        let is_expected_rid = repair_rid.is_some_and(|rid| media.rids_rx().contains(rid));
+        // A regular RID identifies primary traffic, which must go through normal stream discovery.
+        header.has_padding && header.ext_vals.rid.is_none() && has_rtx && is_expected_rid
+    }
+
+    fn handle_rtcp(&mut self, now: Instant, buf: &[u8], wake: &mut Wake) -> Option<()> {
         let srtp: &mut SrtpContext = self.srtp_rx.as_mut()?;
         let unprotected = srtp.unprotect_rtcp(buf)?;
 
         Rtcp::read_packet(&unprotected, &mut self.feedback_rx);
         let mut need_configure_pacer = false;
+        let mut may_move_timeout = false;
 
         if let Some(raw_packets) = &mut self.raw_packets {
             for fb in &self.feedback_rx {
@@ -735,6 +934,10 @@ impl Session {
                 });
                 continue;
             }
+
+            // Application feedback above only queues an event. Keep the conservative
+            // timer wake for every other report, including reports in a compound packet.
+            may_move_timeout = true;
 
             if let RtcpFb::Twcc(twcc) = fb {
                 trace!("Handle TWCC: {:?}", twcc);
@@ -773,6 +976,11 @@ impl Session {
                 continue;
             }
 
+            if let RtcpFb::DlrrItem(dlrr) = fb {
+                self.streams.handle_dlrr(now, dlrr);
+                continue;
+            }
+
             if fb.is_for_rx() {
                 let Some(stream) = self.streams.stream_rx(&fb.ssrc()) else {
                     continue;
@@ -792,6 +1000,11 @@ impl Session {
             self.configure_pacer();
         }
 
+        if !may_move_timeout {
+            // Also covers empty reports; raw-packet capture only queues events.
+            wake.no_timeout();
+        }
+
         Some(())
     }
 
@@ -803,10 +1016,25 @@ impl Session {
             }
         }
 
-        if let Some(bitrate_estimate) = self.bwe.as_mut().and_then(|bwe| bwe.poll_estimate()) {
-            return Some(Event::EgressBitrateEstimate(BweKind::Twcc(
-                bitrate_estimate,
-            )));
+        let can_probe =
+            self.bwe.is_some() && self.srtp_tx.is_some() && self.probe_media().is_some();
+        if let Some(bwe) = &mut self.bwe {
+            // Drain estimates even while unavailable so they cannot be delivered later.
+            let estimate = bwe.poll_estimate();
+            let estimate = match (can_probe, self.bwe_last_event) {
+                (false, Some((last, true))) => Some(last),
+                (false, _) => None,
+                (true, Some((_, true))) => estimate,
+                (true, _) => bwe.last_estimate(),
+            };
+            if let Some(estimate) = estimate {
+                self.bwe_last_event = Some((estimate, can_probe));
+                let kind = BweKind::Twcc {
+                    estimate,
+                    can_probe,
+                };
+                return Some(Event::EgressBitrateEstimate(kind));
+            }
         }
 
         // If we're not ready to flow media, don't send any events.
@@ -827,13 +1055,6 @@ impl Session {
         // This must be before pending_packet.take() since we need to emit the unpaused event
         // before the first packet causing the unpause.
         if let Some(paused) = self.streams.poll_stream_paused() {
-            if paused.paused {
-                if let Some(media) = self.medias.iter_mut().find(|m| m.mid() == paused.mid) {
-                    // Drop held partial depacketizer state so pre-pause fragments can't
-                    // complete into stale MediaData after the stream resumes.
-                    media.reset_depayloaders_for_rid(paused.rid);
-                }
-            }
             return Some(Event::StreamPaused(paused));
         }
 
@@ -852,7 +1073,10 @@ impl Session {
         }
 
         if let Some((mid, bitrate)) = self.streams.poll_remb_request() {
-            return Some(Event::EgressBitrateEstimate(BweKind::Remb(mid, bitrate)));
+            return Some(Event::EgressBitrateEstimate(BweKind::Remb {
+                estimate: bitrate,
+                mid,
+            }));
         }
 
         for media in &mut self.medias {
@@ -879,14 +1103,32 @@ impl Session {
         None
     }
 
-    pub fn poll_event_fallible(&mut self) -> Result<Option<Event>, RtcError> {
+    fn update_receive_recovery(&mut self) {
+        for media in self.medias.iter_mut().filter(|m| m.kind().is_video()) {
+            let mid = media.mid();
+            for (rid, buf) in media.receive_buffers() {
+                let deadline = buf.recovery_candidate().and_then(|(range, received)| {
+                    match self.streams.stream_rx_by_midrid(MidRid(mid, rid)) {
+                        Some(stream) => stream.recovery_deadline(range, received),
+                        None => received.checked_add(Duration::from_millis(300)),
+                    }
+                });
+                buf.set_recovery_deadline(deadline);
+            }
+        }
+    }
+
+    pub fn poll_event_fallible(&mut self, now: Instant) -> Result<Option<Event>, RtcError> {
         // Not relevant in rtp_mode, where the packets are picked up by poll_event().
         if self.rtp_mode {
             return Ok(None);
         }
 
+        self.update_receive_recovery();
         for media in &mut self.medias {
-            if let Some(e) = media.poll_sample(&self.codec_config)? {
+            if let Some(e) =
+                media.poll_sample(&self.codec_config, now, self.reordering_timeout_audio)?
+            {
                 return Ok(Some(Event::MediaData(e)));
             }
         }
@@ -956,7 +1198,7 @@ impl Session {
 
         // Round to nearest multiple of 4 bytes.
         let encryptable_mtu: usize = (self.mtu() - SRTCP_OVERHEAD) & !3;
-        assert!(encryptable_mtu % 4 == 0);
+        assert!(encryptable_mtu.is_multiple_of(4));
 
         let mut data = vec![0_u8; encryptable_mtu];
 
@@ -992,15 +1234,13 @@ impl Session {
         // Figure out which, if any, queue to poll
         // The cluster_id is captured by the pacer at poll time, before register_send() might clear it
         let (midrid, cluster_id) = self.pacer.poll_queue()?;
-        let Some(media) = self.medias.iter().find(|m| m.mid() == midrid.mid()) else {
+        let stream = self.streams.stream_tx_by_midrid(midrid)?;
+        let Some(media) = self.medias.iter().find(|m| m.mid() == stream.mid()) else {
             trace!("Pacer pointed to mid {} which has no media", midrid.mid());
             return None;
         };
-
         let buf = &mut self.poll_packet_buf;
         let twcc_seq = self.twcc;
-
-        let stream = self.streams.stream_tx_by_midrid(midrid)?;
 
         let params = &self.codec_config;
         let exts = media.remote_extmap();
@@ -1055,10 +1295,6 @@ impl Session {
             self.media_bytes_tx += payload_size as u64;
         }
 
-        if !self.packet_first_sent {
-            self.packet_first_sent = true;
-        }
-
         Some(protected.into())
     }
 
@@ -1071,13 +1307,20 @@ impl Session {
             };
         }
 
+        self.update_receive_recovery();
         let feedback_at = self.regular_feedback_at();
         let nack_at = self.nack_at();
         let twcc_at = self.twcc_at();
         let pacing_at = self.pacer.poll_timeout();
-        let packetize_at = self.medias.iter().flat_map(|m| m.poll_timeout()).next();
+        let packetize_at = self.medias.iter().filter_map(|m| m.poll_timeout()).min();
+        let receive_at = self
+            .medias
+            .iter_mut()
+            .filter_map(|media| media.poll_receive_timeout(self.reordering_timeout_audio))
+            .min();
         let paused_at = self.paused_at();
         let send_stream_at = self.streams.send_stream();
+        let request_at = self.streams.pending_request();
 
         // Gives us built-in reason
         let bwe_at = self
@@ -1088,9 +1331,11 @@ impl Session {
             .unwrap_or((None, Reason::BweDelayControl));
 
         (feedback_at, Reason::Feedback)
+            .soonest((request_at, Reason::Feedback))
             .soonest((nack_at, Reason::Nack))
             .soonest((twcc_at, Reason::Twcc))
             .soonest(pacing_at)
+            .soonest((receive_at, Reason::ReceiveReorder))
             .soonest((packetize_at, Reason::Packetize))
             .soonest((paused_at, Reason::PauseCheck))
             .soonest((send_stream_at, Reason::SendStream))
@@ -1099,6 +1344,7 @@ impl Session {
 
     pub fn has_mid(&self, mid: Mid) -> bool {
         self.medias.iter().any(|m| m.mid() == mid)
+            || self.app.is_some_and(|(app_mid, _)| app_mid == mid)
     }
 
     fn regular_feedback_at(&self) -> Option<Instant> {
@@ -1109,7 +1355,9 @@ impl Session {
         self.streams.paused_at()
     }
 
-    fn nack_at(&mut self) -> Option<Instant> {
+    fn nack_at(&self) -> Option<Instant> {
+        // Paused streams stop counting as NACK-enabled once their pending retries finish,
+        // so an idle session doesn't wake every NACK_MIN_INTERVAL for as long as it lives.
         if !self.streams.any_nack_enabled() {
             return None;
         }
@@ -1118,8 +1366,9 @@ impl Session {
     }
 
     fn twcc_at(&self) -> Option<Instant> {
-        let is_receiving = self.streams.is_receiving();
-        if is_receiving && self.enable_twcc_feedback && self.twcc_rx_register.has_unreported() {
+        // Early RTX padding can create transport receipts before any receive stream exists.
+        // Scheduling by pending receipts ensures that padding still receives timely feedback.
+        if self.enable_twcc_feedback && self.twcc_rx_register.has_unreported() {
             Some(self.last_twcc + TWCC_INTERVAL)
         } else {
             None
@@ -1151,9 +1400,9 @@ impl Session {
         snapshot.ingress_loss_fraction = self.twcc_rx_register.loss();
     }
 
-    pub fn set_bwe_desired_bitrate(&mut self, desired_bitrate: Bitrate) {
+    pub fn set_bwe_bitrate(&mut self, minimum: Bitrate, desired: Bitrate) {
         if let Some(bwe) = self.bwe.as_mut() {
-            bwe.set_desired_bitrate(desired_bitrate);
+            bwe.set_bitrate(minimum, desired);
             self.configure_pacer();
         }
     }
@@ -1161,6 +1410,7 @@ impl Session {
     pub fn reset_bwe(&mut self, init_bitrate: Bitrate) {
         if let Some(bwe) = self.bwe.as_mut() {
             bwe.reset(init_bitrate);
+            self.configure_pacer();
         }
     }
 
@@ -1192,22 +1442,24 @@ impl Session {
             return;
         };
         let is_overuse = bwe.is_overusing();
+        let minimum = bwe.minimum_bitrate();
 
         let has_active_media = self.has_active_outgoing_media();
 
         // Calculate pacing and padding rates
-        let result = self
-            .pacer_control
-            .calculate(has_active_media, current_estimate, is_overuse);
+        let result =
+            self.pacer_control
+                .calculate(has_active_media, current_estimate, is_overuse, minimum);
 
         self.pacer.set_padding_rate(result.padding_rate);
         self.pacer.set_pacing_rate(result.pacing_rate);
     }
 
     fn has_active_outgoing_media(&self) -> bool {
-        self.medias
-            .iter()
-            .any(|m| m.direction().is_sending() && !m.disabled())
+        // Direct API media has no SDP remote payload list, so Media::disabled()
+        // is not an availability check here. Use the same negotiated/configured
+        // sending capabilities as probing, including TWCC feedback.
+        self.probe_media().is_some()
     }
 
     pub fn media_by_mid(&self, mid: Mid) -> Option<&Media> {
@@ -1218,18 +1470,30 @@ impl Session {
         self.medias.iter_mut().find(|m| m.mid() == mid)
     }
 
-    fn do_payload(&mut self) -> Result<(), RtcError> {
+    fn do_payload(&mut self, now: Instant) -> Result<(), RtcError> {
         let mtu = self.mtu();
         for m in &mut self.medias {
             m.do_payload(
+                now,
                 &mut self.streams,
                 &self.codec_config,
                 self.vp9_packetizer_mode,
                 mtu,
+                self.codec_config.red_distances(),
             )?;
         }
 
         Ok(())
+    }
+
+    /// Toggle RFC 2198 RED wrapping on the send side at runtime. No renegotiation: RED availability
+    /// is fixed at negotiation (or via DirectAPI); this only decides whether we wrap right now.
+    /// Returns whether the setting changed.
+    pub fn set_red_send(&mut self, mid: Mid, enabled: bool) -> bool {
+        let Some(media) = self.media_by_mid_mut(mid) else {
+            return false;
+        };
+        media.set_red_send(enabled)
     }
 
     pub fn set_direction(&mut self, mid: Mid, direction: Direction) -> bool {
@@ -1296,18 +1560,51 @@ pub struct PacketReceipt {
 /// Find the PayloadParams for the given Pt, either when the Pt is the main Pt for the Codec or
 /// when it's the RTX Pt.
 fn main_payload_params(c: &CodecConfig, pt: Pt) -> Option<&PayloadParams> {
-    c.iter().find(|p| p.pt == pt || p.resend == Some(pt))
+    c.iter()
+        .find(|p| p.pt == pt || p.resend == Some(pt) || p.red == Some(pt))
 }
 
-fn make_max_seq_lookup(map: &HashMap<Ssrc, SeqNo>) -> impl Fn(Ssrc) -> Option<SeqNo> + '_ {
-    |ssrc| map.get(&ssrc).cloned()
+/// A decoded RED (RFC 2198) packet: the primary block plus any redundant (older) blocks.
+struct UnRed<'a> {
+    primary: &'a [u8],
+    redundant: Vec<RedBlock<'a>>,
 }
 
-fn update_max_seq(map: &mut HashMap<Ssrc, SeqNo>, ssrc: Ssrc, seq_no: SeqNo) {
-    let current = map.entry(ssrc).or_insert(seq_no);
-    if seq_no > *current {
-        *current = seq_no;
+/// Decode a RED packet, rewrite the header to the primary PT, and return the primary payload
+/// plus the redundant blocks. Returns `None` (drop) when the RED structure is malformed.
+fn un_red<'a>(header: &mut RtpHeader, data: &'a [u8], pt: Pt) -> Option<UnRed<'a>> {
+    let blocks = RedDecoder::decode(data).ok()?;
+    let mut primary = None;
+    let mut redundant = Vec::new();
+    for b in blocks {
+        if b.is_primary {
+            // RFC 2198 lets redundant blocks use a different PT, but the primary block must carry
+            // the codec this RED stream negotiated (`pt`, e.g. Opus). A mismatch means this is not
+            // the primary we expect, so drop the packet rather than mislabel a foreign codec (e.g.
+            // reinterpret a PCMU primary as Opus).
+            if b.pt != *pt {
+                return None;
+            }
+            primary = Some(b.payload);
+        } else {
+            redundant.push(b);
+        }
     }
+    header.payload_type = pt;
+    Some(UnRed {
+        primary: primary?,
+        redundant,
+    })
+}
+
+fn make_max_seq_lookup(map: &HashMap<Ssrc, SeqNoWindow>) -> impl Fn(Ssrc) -> Option<SeqNo> + '_ {
+    |ssrc| map.get(&ssrc).map(|s| s.max_seq())
+}
+
+fn update_max_seq(map: &mut HashMap<Ssrc, SeqNoWindow>, ssrc: Ssrc, seq_no: SeqNo) {
+    map.entry(ssrc)
+        .and_modify(|window| window.update(seq_no))
+        .or_insert_with(|| SeqNoWindow::new(seq_no));
 }
 
 #[cfg(test)]
@@ -1315,6 +1612,137 @@ mod tests {
     use super::*;
     use crate::RtcConfig;
     use crate::io::DATAGRAM_MTU_TARGET;
+    use crate::packet::RedEncoder;
+
+    use crate::poll::Readiness;
+    use crate::rtp_::RtcpPacket;
+
+    fn keyed_session() -> Session {
+        let mut session = Session::new(&RtcConfig::default());
+        let crypto = crate::crypto::test_default_provider();
+        let profile = SrtpProfile::AEAD_AES_128_GCM;
+        let mat = KeyingMaterial::new(&vec![0; profile.keying_material_len()]);
+        session.set_keying_material(mat, crypto, profile, true);
+        session
+    }
+
+    #[test]
+    fn readiness_closed_session_timeout_preserves_pending_bye() {
+        let now = Instant::now();
+        let mut session = keyed_session();
+        session
+            .streams
+            .declare_stream_tx(42.into(), None, MidRid("vid".into(), None));
+        session.close_rtp();
+        let before = session.poll_timeout();
+        assert_eq!(before.1, Reason::Feedback);
+        let mut readiness = Readiness::idle();
+        session.handle_timeout(now, &mut readiness.wake()).unwrap();
+        assert!(!readiness.wants_events());
+        assert!(!readiness.wants_timeout());
+        assert_eq!(session.poll_timeout(), before);
+        assert!(
+            session.poll_datagram(now).is_some(),
+            "existing BYE must still drain"
+        );
+    }
+
+    #[test]
+    fn readiness_malformed_rtp_does_not_wake() {
+        let mut session = keyed_session();
+        let before = session.poll_timeout();
+        let mut readiness = Readiness::idle();
+        session.handle_rtp_receive(Instant::now(), &[0x80], &mut readiness.wake());
+        assert!(!readiness.wants_events());
+        assert!(!readiness.wants_timeout());
+        assert_eq!(session.poll_timeout(), before);
+        assert!(session.poll_event().is_none());
+    }
+
+    #[test]
+    fn readiness_valid_rtp_header_keeps_wake_even_without_keys() {
+        let mut session = Session::new(&RtcConfig::default());
+        let mut readiness = Readiness::idle();
+        // SSRC 0 creates a probe receive stream before the missing-key check.
+        let packet = [0x80, 96, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0];
+        session.handle_rtp_receive(Instant::now(), &packet, &mut readiness.wake());
+        assert!(session.streams.has_stream_rx(0.into()));
+        assert!(readiness.wants_events());
+        assert!(readiness.wants_timeout());
+    }
+
+    #[test]
+    fn readiness_rejected_rtcp_does_not_wake() {
+        for mut session in [Session::new(&RtcConfig::default()), keyed_session()] {
+            let before = session.poll_timeout();
+            let mut readiness = Readiness::idle();
+            session.handle_rtcp_receive(Instant::now(), &[0; 32], &mut readiness.wake());
+            assert!(!readiness.wants_events());
+            assert!(!readiness.wants_timeout());
+            assert_eq!(session.poll_timeout(), before);
+            assert!(session.poll_event().is_none());
+        }
+    }
+
+    #[test]
+    fn readiness_rtcp_app_feedback_only_wakes_events() {
+        for mixed in [false, true] {
+            let now = Instant::now();
+            let mut session = keyed_session();
+            let before = session.poll_timeout();
+            let feedback = crate::rtp_::AppSpecificFeedback {
+                sender_ssrc: 1.into(),
+                media_ssrc: 2.into(),
+                payload: vec![1, 2, 3, 4].into(),
+            };
+            // Empty RR followed by application feedback, as sent by DirectApi.
+            let mut buf = vec![0x80, 201, 0, 1, 0, 0, 0, 1];
+            let mut packet = [0; 64];
+            let len = feedback.write_to(&mut packet);
+            buf.extend_from_slice(&packet[..len]);
+            if mixed {
+                let pli = Pli {
+                    sender_ssrc: 1.into(),
+                    ssrc: 2.into(),
+                };
+                let len = pli.write_to(&mut packet);
+                buf.extend_from_slice(&packet[..len]);
+            }
+            // Equal key material lets the local transmit context act as the peer.
+            let packet = session.srtp_tx.as_mut().unwrap().protect_rtcp(&buf);
+            let mut readiness = Readiness::idle();
+            session.handle_rtcp_receive(now, &packet, &mut readiness.wake());
+            assert!(readiness.wants_events());
+            assert_eq!(
+                readiness.wants_timeout(),
+                mixed,
+                "other compound reports keep timer invalidation"
+            );
+            let Some(Event::AppSpecificFeedback(received)) = session.poll_event() else {
+                panic!("feedback must remain observable immediately");
+            };
+            assert_eq!(received.payload, feedback.payload);
+            assert_eq!(session.poll_timeout(), before);
+        }
+    }
+
+    #[test]
+    fn readiness_empty_rtcp_report_keeps_raw_packet_events() {
+        let mut session = keyed_session();
+        session.raw_packets = Some(VecDeque::new());
+        let before = session.poll_timeout();
+        let packet = session
+            .srtp_tx
+            .as_mut()
+            .unwrap()
+            .protect_rtcp(&[0x80, 201, 0, 1, 0, 0, 0, 1]);
+        let mut readiness = Readiness::idle();
+        session.handle_rtcp_receive(Instant::now(), &packet, &mut readiness.wake());
+        assert!(readiness.wants_events());
+        assert!(!readiness.wants_timeout());
+        assert!(matches!(session.poll_event(), Some(Event::RawPacket(_))));
+        assert_eq!(session.poll_timeout(), before);
+    }
 
     #[test]
     fn session_mtu_matches_config() {
@@ -1325,5 +1753,17 @@ mod tests {
         let cfg = RtcConfig::default().set_mtu(900..=1280);
         let s = Session::new(&cfg);
         assert_eq!(s.mtu(), 900);
+    }
+
+    #[test]
+    fn un_red_rejects_a_primary_payload_type_mismatch() {
+        let expected_primary_pt = Pt::new_with_value(111);
+        let data = RedEncoder::encode(0, &[1, 2, 3], &[]);
+        let mut header = RtpHeader::default();
+
+        assert!(
+            un_red(&mut header, &data, expected_primary_pt).is_none(),
+            "RED associated with Opus must not reinterpret a PCMU primary block as Opus"
+        );
     }
 }

@@ -1,5 +1,6 @@
 use crate::error::{Error, Result};
 
+use alloc::vec::Vec;
 use bytes::{Bytes, BytesMut};
 
 ///////////////////////////////////////////////////////////////////
@@ -107,6 +108,75 @@ fn test_payload_queue_get_gap_ack_block() -> Result<()> {
 }
 
 #[test]
+fn test_payload_queue_gap_ack_blocks_wraparound() {
+    for cumulative_tsn in [0, u32::MAX - 2, u32::MAX] {
+        let mut pq = PayloadQueue::new();
+        for offset in [6, 4, 2, 3] {
+            assert!(pq.push(
+                make_payload(cumulative_tsn.wrapping_add(offset), 1),
+                cumulative_tsn
+            ));
+        }
+
+        let gaps: Vec<_> = pq
+            .get_gap_ack_blocks(cumulative_tsn)
+            .iter()
+            .map(|gap| (gap.start, gap.end))
+            .collect();
+        assert_eq!(gaps, [(2, 4), (6, 6)], "cumulative TSN {cumulative_tsn}");
+    }
+}
+
+#[test]
+fn test_payload_queue_gap_ack_blocks_at_u16_limit() {
+    for cumulative_tsn in [0, u32::MAX - 1] {
+        let mut pq = PayloadQueue::new();
+        for offset in [2, 65_534, 65_535, 65_536, 65_537] {
+            assert!(pq.push(
+                make_payload(cumulative_tsn.wrapping_add(offset), 1),
+                cumulative_tsn
+            ));
+        }
+
+        let gaps: Vec<_> = pq
+            .get_gap_ack_blocks(cumulative_tsn)
+            .iter()
+            .map(|gap| (gap.start, gap.end))
+            .collect();
+        assert_eq!(
+            gaps,
+            [(2, 2), (65_534, 65_535)],
+            "cumulative TSN {cumulative_tsn}"
+        );
+        assert_eq!(pq.len(), 5);
+        assert_eq!(pq.get_num_bytes(), 5);
+    }
+}
+
+#[test]
+fn test_payload_queue_gap_ack_blocks_retain_unrepresentable_offsets() {
+    for cumulative_tsn in [0, u32::MAX - 1] {
+        for offset in [65_536, 65_537, (1 << 31) - 1] {
+            let mut pq = PayloadQueue::new();
+            let tsn = cumulative_tsn.wrapping_add(offset);
+            assert!(pq.push(make_payload(tsn, 1), cumulative_tsn));
+            assert!(pq.get_gap_ack_blocks(cumulative_tsn).is_empty());
+            assert_eq!(pq.len(), 1);
+            assert_eq!(pq.get_num_bytes(), 1);
+            assert!(pq.get(tsn).is_some());
+
+            let advanced_tsn = cumulative_tsn.wrapping_add(offset - 2);
+            let gaps: Vec<_> = pq
+                .get_gap_ack_blocks(advanced_tsn)
+                .iter()
+                .map(|gap| (gap.start, gap.end))
+                .collect();
+            assert_eq!(gaps, [(2, 2)]);
+        }
+    }
+}
+
+#[test]
 fn test_payload_queue_get_last_tsn_received() -> Result<()> {
     let mut pq = PayloadQueue::new();
 
@@ -138,14 +208,14 @@ fn test_payload_queue_get_last_tsn_received() -> Result<()> {
 }
 
 #[test]
-fn test_payload_queue_mark_all_to_retrasmit() -> Result<()> {
+fn test_payload_queue_mark_all_to_retransmit() -> Result<()> {
     let mut pq = PayloadQueue::new();
 
     for i in 0..3 {
         pq.push(make_payload(i + 1, 10), 0);
     }
     pq.mark_as_acked(2);
-    pq.mark_all_to_retrasmit();
+    pq.mark_all_to_retransmit();
 
     let c = pq.get(1);
     assert!(c.is_some(), "should be true");
@@ -168,7 +238,7 @@ fn test_payload_queue_reset_retransmit_flag_on_ack() -> Result<()> {
         pq.push(make_payload(i + 1, 10), 0);
     }
 
-    pq.mark_all_to_retrasmit();
+    pq.mark_all_to_retransmit();
     pq.mark_as_acked(2); // should cancel retransmission for TSN 2
     pq.mark_as_acked(4); // should cancel retransmission for TSN 4
 
@@ -1157,4 +1227,94 @@ fn test_reassembly_queue_max_message_size() {
         }),
         Ok(true)
     );
+}
+
+// Run with --release --ignored --nocapture --test-threads=1.
+#[test]
+#[ignore = "manual queue drain measurement"]
+fn measure_queue_drain() {
+    use core::hint::black_box;
+    use std::time::Instant;
+
+    for n in [128u32, 1024, 4096] {
+        for kind in ["payload", "ordered", "unordered"] {
+            let mut samples = Vec::new();
+            for _ in 0..21 {
+                let mut pq = PayloadQueue::new();
+                let mut rq = ReassemblyQueue::new(0, 65536);
+                for i in 0..n {
+                    let p = ChunkPayloadData {
+                        stream_sequence_number: i as u16,
+                        beginning_fragment: true,
+                        ending_fragment: true,
+                        unordered: kind == "unordered",
+                        ..make_payload(i, 16)
+                    };
+                    if kind == "payload" {
+                        pq.push_no_check(p);
+                    } else {
+                        rq.push(p).unwrap();
+                    }
+                }
+                let start = Instant::now();
+                for i in 0..n {
+                    if kind == "payload" {
+                        black_box(pq.pop(i).unwrap());
+                    } else {
+                        black_box(rq.read().unwrap());
+                    }
+                }
+                samples.push(start.elapsed().as_nanos());
+                assert_eq!(pq.get_num_bytes(), 0);
+                assert_eq!(rq.get_num_bytes(), 0);
+            }
+            samples.sort_unstable();
+            std::println!(
+                "{kind} n={n}: median={} ns min={} max={}",
+                samples[10],
+                samples[0],
+                samples[20]
+            );
+        }
+    }
+}
+
+#[test]
+fn test_queue_front_pop_then_reorder_across_wrap() -> Result<()> {
+    let mut pq = PayloadQueue::new();
+    let mut rq = ReassemblyQueue::new(0, 65536);
+    rq.next_ssn = u16::MAX - 1;
+    for tsn in [u32::MAX - 1, u32::MAX] {
+        pq.push_no_check(make_payload(tsn, 16));
+        rq.push(ChunkPayloadData {
+            stream_sequence_number: tsn as u16,
+            beginning_fragment: true,
+            ending_fragment: true,
+            ..make_payload(tsn, 16)
+        })?;
+    }
+    assert_eq!(pq.pop(u32::MAX - 1).unwrap().tsn, u32::MAX - 1);
+    assert_eq!(rq.read().unwrap().ssn, u16::MAX - 1);
+    for tsn in [1, 0] {
+        pq.push_no_check(make_payload(tsn, 16));
+        rq.push(ChunkPayloadData {
+            stream_sequence_number: tsn as u16,
+            beginning_fragment: true,
+            ending_fragment: true,
+            ..make_payload(tsn, 16)
+        })?;
+    }
+    assert_eq!(pq.get_last_tsn_received(), Some(&1));
+    let gaps = pq.get_gap_ack_blocks(u32::MAX - 1);
+    assert_eq!(gaps.len(), 1);
+    assert_eq!((gaps[0].start, gaps[0].end), (1, 3));
+    for tsn in [u32::MAX, 0, 1] {
+        assert_eq!(pq.pop(tsn).unwrap().tsn, tsn);
+        assert_eq!(rq.read().unwrap().ssn, tsn as u16);
+    }
+    assert!(pq.pop(2).is_none());
+    assert!(rq.read().is_none());
+    assert_eq!(pq.get_num_bytes(), 0);
+    assert_eq!(rq.get_num_bytes(), 0);
+    Ok(())
 }

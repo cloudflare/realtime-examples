@@ -38,7 +38,7 @@ impl Listener {
                 private_key: KEY.to_vec(),
             })
             .clear_codecs()
-            .enable_opus(true)
+            .enable_opus(true, false)
             .build(Instant::now());
         rtc.add_local_candidate(Candidate::host(socket.local_addr().unwrap(), "udp").unwrap());
         let mut this = Self {
@@ -83,7 +83,7 @@ impl Listener {
                 Output::Transmit(packet) => {
                     if packet.contents.first() == Some(&23) {
                         self.data_packets += 1;
-                        if self.drop_data && self.data_packets % 5 == 0 {
+                        if self.drop_data && self.data_packets.is_multiple_of(5) {
                             continue;
                         }
                     }
